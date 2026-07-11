@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CNGPT — Demo SSO (BFF)</title>
+
+<!-- Vue 3 lewat CDN, tanpa build tool, sengaja dibuat sesederhana mungkin -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.4.21/vue.global.prod.min.js"></script>
+
+<style>
+  :root {
+    --navy: #1a237e;
+    --navy-dark: #10164f;
+    --bg: #f5f6fa;
+    --border: #dfe3ee;
+    --text: #212121;
+    --muted: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+
+  /* ---------- Layout umum ---------- */
+  .page {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    background: var(--navy);
+    color: white;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header .brand {
+    font-weight: 700;
+    font-size: 18px;
+    letter-spacing: 0.3px;
+  }
+  header .user-box {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 14px;
+  }
+  header .avatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: #3949ab;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 13px;
+  }
+  header button {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.4);
+    color: white;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  header button:hover { background: rgba(255,255,255,0.12); }
+
+  /* ---------- Halaman belum login ---------- */
+  .center-screen {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .login-card {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 40px 36px;
+    max-width: 380px;
+    width: 100%;
+    text-align: center;
+    box-shadow: 0 2px 10px rgba(16, 22, 79, 0.06);
+  }
+  .login-card h1 {
+    font-size: 20px;
+    margin: 4px 0 6px;
+  }
+  .login-card p {
+    color: var(--muted);
+    font-size: 13.5px;
+    line-height: 1.5;
+    margin-bottom: 26px;
+  }
+  .ms-login-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--navy);
+    color: white;
+    border: none;
+    padding: 11px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+    justify-content: center;
+  }
+  .ms-login-btn:hover { background: var(--navy-dark); }
+  .ms-icon {
+    width: 16px;
+    height: 16px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 2px;
+  }
+  .ms-icon span { display: block; }
+  .ms-icon span:nth-child(1) { background: #f25022; }
+  .ms-icon span:nth-child(2) { background: #7fba00; }
+  .ms-icon span:nth-child(3) { background: #00a4ef; }
+  .ms-icon span:nth-child(4) { background: #ffb900; }
+
+  .error-box {
+    margin-top: 16px;
+    background: #fdecea;
+    color: #b3261e;
+    border: 1px solid #f6c6c2;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 12.5px;
+    text-align: left;
+  }
+
+  /* ---------- Halaman chat (sudah login) ---------- */
+  .chat-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    max-width: 720px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 20px 16px;
+  }
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding-bottom: 12px;
+  }
+  .empty-state {
+    margin: auto;
+    text-align: center;
+    color: var(--muted);
+    font-size: 13.5px;
+    max-width: 320px;
+  }
+  .bubble {
+    max-width: 78%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 14px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+  .bubble.user {
+    align-self: flex-end;
+    background: var(--navy);
+    color: white;
+    border-bottom-right-radius: 3px;
+  }
+  .bubble.assistant {
+    align-self: flex-start;
+    background: white;
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 3px;
+  }
+  .bubble.error {
+    align-self: flex-start;
+    background: #fdecea;
+    border: 1px solid #f6c6c2;
+    color: #b3261e;
+  }
+  .bubble.pending {
+    align-self: flex-start;
+    background: white;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-style: italic;
+  }
+
+  .composer {
+    display: flex;
+    gap: 8px;
+    border: 1px solid var(--border);
+    background: white;
+    border-radius: 10px;
+    padding: 8px;
+  }
+  .composer input {
+    flex: 1;
+    border: none;
+    outline: none;
+    font-size: 14px;
+    padding: 8px 6px;
+  }
+  .composer button {
+    background: var(--navy);
+    color: white;
+    border: none;
+    padding: 0 18px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .composer button:disabled {
+    background: #b7bce0;
+    cursor: not-allowed;
+  }
+
+  .checking {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  /* ---------- Connector panel ---------- */
+  .connector-panel {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .connector-panel h3 {
+    margin: 0 0 12px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .connector-actions {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .connector-actions button {
+    background: var(--navy);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .connector-actions button:hover {
+    background: var(--navy-dark);
+  }
+  .connector-actions button:disabled {
+    background: #b7bce0;
+    cursor: not-allowed;
+  }
+  .connector-list {
+    background: #f9fafb;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    max-height: 300px;
+    overflow-y: auto;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .connector-list.empty {
+    color: var(--muted);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-style: italic;
+    text-align: center;
+  }
+  .connector-item {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 8px;
+  }
+  .connector-item:last-child {
+    margin-bottom: 0;
+  }
+  .connector-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .connector-item-name {
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .connector-item-id {
+    color: var(--muted);
+    font-size: 11px;
+    font-family: 'Courier New', monospace;
+  }
+  .connector-detail-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--navy);
+  }
+  .connector-detail-btn:hover {
+    background: #f0f1f5;
+  }
+
+  /* ---------- Authorization warning ---------- */
+  .auth-warning {
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 12px 0;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .auth-warning-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+  }
+  .auth-warning-content {
+    flex: 1;
+  }
+  .auth-warning-title {
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 4px;
+  }
+  .auth-warning-text {
+    font-size: 13px;
+    color: #856404;
+    margin-bottom: 8px;
+  }
+  .auth-warning-btn {
+    background: #ffc107;
+    color: #000;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .auth-warning-btn:hover {
+    background: #e0a800;
+  }
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+
+<script>
+const { createApp, ref, onMounted, nextTick } = Vue;
+
+// ---------------------------------------------------------------
+// Satu-satunya hal yang perlu diubah kalau backend jalan di alamat
+// atau port lain.
+// ---------------------------------------------------------------
+const BACKEND_URL = "http://localhost:8080";
+
+createApp({
+  setup() {
+    const checkingSession = ref(true); // true selama proses cek /api/me pertama kali
+    const user = ref(null);            // { name, email } kalau sudah login
+    const loginError = ref("");
+
+    const messages = ref([]);          // { role: 'user' | 'assistant' | 'error', text }
+    const chatInput = ref("");
+    const sending = ref(false);
+    const messagesEl = ref(null);
+
+    // Connector management
+    const connectors = ref(null);      // Data connector list
+    const connectorDetail = ref(null); // Detail connector yang dipilih
+    const engineConfig = ref(null);    // Engine configuration
+    const loadingConnectors = ref(false);
+    const needsConnectorAuth = ref(false); // Flag if connector authorization needed
+    const authKeywords = ref([]);      // Keywords detected for auth needed
+
+    // -------------------------------------------------------------
+    // 1) Cek status login saat halaman dibuka (panggil /api/me).
+    //    Ini yang menentukan apakah user melihat halaman login
+    //    atau halaman chat.
+    // -------------------------------------------------------------
+    async function checkSession() {
+      try {
+        console.log("[DEBUG] Checking session...");
+        console.log("[DEBUG] Current cookies:", document.cookie);
+
+        const res = await fetch(`${BACKEND_URL}/api/me`, {
+          credentials: "include", // wajib: supaya cookie session ikut terkirim
+        });
+
+        console.log("[DEBUG] /api/me response status:", res.status);
+        console.log("[DEBUG] Response headers:", [...res.headers.entries()]);
+
+        if (res.ok) {
+          const data = await res.json();
+          user.value = data;
+          console.log("[DEBUG] ✅ User logged in:", user.value);
+        } else {
+          user.value = null;
+          console.log("[DEBUG] ❌ User not logged in (status:", res.status, ")");
+        }
+      } catch (e) {
+        // Backend belum jalan / network error — anggap saja belum login.
+        console.error("[DEBUG] ⚠️ Error checking session:", e);
+        user.value = null;
+      } finally {
+        checkingSession.value = false;
+        console.log("[DEBUG] Session check complete. User state:", user.value ? "logged in" : "not logged in");
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 2) Login: PENTING — ini navigasi halaman biasa (bukan fetch),
+    //    karena /auth/login akan me-redirect browser ke Microsoft.
+    //    Kalau dipanggil pakai fetch(), akan gagal kena CORS.
+    // -------------------------------------------------------------
+    function login() {
+      console.log("[DEBUG] 🔐 Initiating login flow...");
+      console.log("[DEBUG] Redirecting to:", `${BACKEND_URL}/auth/login`);
+      console.log("[DEBUG] Current cookies before login:", document.cookie);
+      window.location.href = `${BACKEND_URL}/auth/login`;
+    }
+
+    // -------------------------------------------------------------
+    // 3) Logout: ini boleh pakai fetch biasa, karena tidak melibatkan
+    //    redirect lintas domain — cuma menghapus session di backend.
+    // -------------------------------------------------------------
+    async function logout() {
+      try {
+        console.log("[DEBUG] Logging out...");
+        const res = await fetch(`${BACKEND_URL}/auth/logout`, {
+          method: "POST",
+          credentials: "include",
+        });
+        console.log("[DEBUG] Logout response:", res.status);
+      } catch (e) {
+        console.error("[DEBUG] Logout error:", e);
+      } finally {
+        // Clear all frontend state
+        user.value = null;
+        messages.value = [];
+        connectors.value = null;
+        connectorDetail.value = null;
+        engineConfig.value = null;
+        needsConnectorAuth.value = false;
+        authKeywords.value = [];
+
+        // IMPORTANT: Reload page to clear all state and cookies
+        console.log("[DEBUG] Reloading page after logout...");
+        window.location.reload();
+      }
+    }
+
+    // -------------------------------------------------------------
+    // DEBUG: Clear all sessions (development only)
+    // -------------------------------------------------------------
+    async function clearAllSessions() {
+      try {
+        console.log("[DEBUG] 🧹 Clearing all sessions...");
+        const res = await fetch(`${BACKEND_URL}/auth/debug/clear-all-sessions`, {
+          credentials: "include",
+        });
+        const data = await res.json();
+        console.log("[DEBUG] Clear sessions response:", data);
+
+        user.value = null;
+        messages.value = [];
+        connectors.value = null;
+        connectorDetail.value = null;
+        engineConfig.value = null;
+        needsConnectorAuth.value = false;
+
+        alert("✅ All sessions cleared!\n\n" + data.message + "\n\nPage will reload now.");
+        window.location.reload();
+      } catch (e) {
+        console.error("[DEBUG] Error clearing sessions:", e);
+        alert("❌ Error clearing sessions: " + e.message);
+      }
+    }
+
+    // -------------------------------------------------------------
+    // DEBUG: List all active sessions
+    // -------------------------------------------------------------
+    async function listSessions() {
+      try {
+        console.log("[DEBUG] 📋 Fetching session list...");
+        const res = await fetch(`${BACKEND_URL}/auth/debug/sessions`, {
+          credentials: "include",
+        });
+        const data = await res.json();
+        console.log("[DEBUG] Sessions:", data);
+        alert(`Active Sessions: ${data.count}\n\n${data.sessionIDs.join('\n')}`);
+      } catch (e) {
+        console.error("[DEBUG] Error listing sessions:", e);
+        alert("❌ Error listing sessions: " + e.message);
+      }
+    }
+
+    // -------------------------------------------------------------
+    // DEBUG: Get token info
+    // -------------------------------------------------------------
+    async function getTokenInfo() {
+      try {
+        console.log("[DEBUG] 🔍 Fetching token info...");
+        const res = await fetch(`${BACKEND_URL}/api/debug/token-info`, {
+          credentials: "include",
+        });
+        const data = await res.json();
+        console.log("[DEBUG] Token Info:", data);
+
+        const info = [
+          "📋 TOKEN INFORMATION",
+          "",
+          "Session:",
+          `  - Email: ${data.session.email}`,
+          `  - Name: ${data.session.name}`,
+          `  - Session ID: ${data.session.sessionID}`,
+          `  - Created: ${new Date(data.session.createdAt).toLocaleString()}`,
+          `  - Expires: ${new Date(data.session.tokenExpiry).toLocaleString()}`,
+          "",
+          "Token Preview:",
+          `  ${data.tokenPreview}`,
+          "",
+          "Token Info:",
+          JSON.stringify(data.tokenInfo, null, 2),
+          "",
+          data.note,
+        ].join('\n');
+
+        alert(info);
+      } catch (e) {
+        console.error("[DEBUG] Error getting token info:", e);
+        alert("❌ Error getting token info: " + e.message);
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 4) Kirim pesan chat ke backend, backend yang meneruskan ke
+    //    Gemini Enterprise memakai token yang tersimpan di session.
+    // -------------------------------------------------------------
+    async function sendMessage() {
+      const text = chatInput.value.trim();
+      if (!text || sending.value) return;
+
+      messages.value.push({ role: "user", text });
+      chatInput.value = "";
+      sending.value = true;
+      await scrollToBottom();
+
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/chat`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text }),
+        });
+
+        if (res.status === 401) {
+          messages.value.push({
+            role: "error",
+            text: "Sesi kamu sudah habis. Silakan login ulang.",
+          });
+          user.value = null;
+          return;
+        }
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          messages.value.push({
+            role: "error",
+            text: data.error || "Terjadi kesalahan saat menghubungi Gemini Enterprise.",
+          });
+          return;
+        }
+
+        // Check if response indicates connector needs authorization
+        if (data.connectorAuthCheck && data.connectorAuthCheck.needsAuthorization) {
+          needsConnectorAuth.value = true;
+          authKeywords.value = data.connectorAuthCheck.detectedKeywords || [];
+          console.log("[DEBUG] Connector authorization needed. Keywords:", authKeywords.value);
+        }
+
+        // Extract actual response data
+        const responseData = data.raw || data;
+
+        // Catatan: bentuk respons persis dari Gemini Enterprise (streamAssist)
+        // bisa cukup kompleks (nested JSON). Untuk demo sederhana ini kita
+        // coba ambil teks jawabannya kalau ada, kalau tidak ketemu pola yang
+        // diharapkan, tampilkan JSON mentahnya supaya tetap terlihat hasilnya.
+
+        // For streaming response (array of chunks)
+        let answerText = "";
+        if (Array.isArray(responseData)) {
+          // Collect all text from streaming chunks
+          for (const chunk of responseData) {
+            const chunkText = chunk?.answer?.replies?.[0]?.groundedContent?.content?.text;
+            if (chunkText) {
+              answerText += chunkText;
+            }
+          }
+        }
+
+        // Fallback to non-streaming response
+        if (!answerText) {
+          answerText =
+            responseData?.answer?.replies?.[0]?.groundedContent?.content?.text ||
+            responseData?.answer?.answerText ||
+            JSON.stringify(responseData, null, 2);
+        }
+
+        messages.value.push({ role: "assistant", text: answerText });
+      } catch (e) {
+        messages.value.push({
+          role: "error",
+          text: "Gagal terhubung ke backend. Pastikan backend sedang berjalan.",
+        });
+      } finally {
+        sending.value = false;
+        await scrollToBottom();
+      }
+    }
+
+    async function scrollToBottom() {
+      await nextTick();
+      if (messagesEl.value) {
+        messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 5) Get connector list from backend
+    // -------------------------------------------------------------
+    async function getConnectorList() {
+      loadingConnectors.value = true;
+      connectorDetail.value = null; // Reset detail
+      try {
+        console.log("[DEBUG] Fetching connector list...");
+        const res = await fetch(`${BACKEND_URL}/api/datastores`, {
+          credentials: "include",
+        });
+
+        if (res.status === 401) {
+          alert("Sesi kamu sudah habis. Silakan login ulang.");
+          user.value = null;
+          return;
+        }
+
+        const data = await res.json();
+        console.log("[DEBUG] Connector list response:", data);
+        connectors.value = data;
+      } catch (e) {
+        console.error("[DEBUG] Error fetching connector list:", e);
+        alert("Gagal mengambil connector list. Pastikan backend sedang berjalan.");
+      } finally {
+        loadingConnectors.value = false;
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 6) Get specific connector detail
+    // -------------------------------------------------------------
+    async function getConnectorDetail(dataStoreId) {
+      loadingConnectors.value = true;
+      try {
+        console.log("[DEBUG] Fetching connector detail for:", dataStoreId);
+        const res = await fetch(`${BACKEND_URL}/api/datastores/${dataStoreId}`, {
+          credentials: "include",
+        });
+
+        if (res.status === 401) {
+          alert("Sesi kamu sudah habis. Silakan login ulang.");
+          user.value = null;
+          return;
+        }
+
+        const data = await res.json();
+        console.log("[DEBUG] Connector detail response:", data);
+        connectorDetail.value = data;
+      } catch (e) {
+        console.error("[DEBUG] Error fetching connector detail:", e);
+        alert("Gagal mengambil connector detail.");
+      } finally {
+        loadingConnectors.value = false;
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 7) Get engine configuration
+    // -------------------------------------------------------------
+    async function getEngineConfig() {
+      loadingConnectors.value = true;
+      try {
+        console.log("[DEBUG] Fetching engine config...");
+        const res = await fetch(`${BACKEND_URL}/api/engine`, {
+          credentials: "include",
+        });
+
+        if (res.status === 401) {
+          alert("Sesi kamu sudah habis. Silakan login ulang.");
+          user.value = null;
+          return;
+        }
+
+        const data = await res.json();
+        console.log("[DEBUG] Engine config response:", data);
+        engineConfig.value = data;
+      } catch (e) {
+        console.error("[DEBUG] Error fetching engine config:", e);
+        alert("Gagal mengambil engine config.");
+      } finally {
+        loadingConnectors.value = false;
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 8) Open Gemini Enterprise webapp for connector authorization
+    // -------------------------------------------------------------
+    function authorizeConnector() {
+      // Open Gemini Enterprise webapp in new tab
+      // User needs to authorize the connector there
+      const geminiWebappURL = "https://gemini.google.com/app";
+      window.open(geminiWebappURL, '_blank');
+
+      // Optionally reset the flag after some time or user action
+      setTimeout(() => {
+        const confirmed = confirm(
+          "Apakah Anda sudah authorize connector di Gemini Enterprise webapp?\n\n" +
+          "Click OK jika sudah selesai authorize, lalu coba query lagi."
+        );
+        if (confirmed) {
+          needsConnectorAuth.value = false;
+        }
+      }, 3000);
+    }
+
+    function initials(name) {
+      if (!name) return "?";
+      return name
+        .split(" ")
+        .map((p) => p[0])
+        .slice(0, 2)
+        .join("")
+        .toUpperCase();
+    }
+
+    onMounted(checkSession);
+
+    return {
+      checkingSession,
+      user,
+      loginError,
+      messages,
+      chatInput,
+      sending,
+      messagesEl,
+      connectors,
+      connectorDetail,
+      engineConfig,
+      loadingConnectors,
+      needsConnectorAuth,
+      authKeywords,
+      login,
+      logout,
+      sendMessage,
+      getConnectorList,
+      getConnectorDetail,
+      getEngineConfig,
+      authorizeConnector,
+      clearAllSessions,
+      listSessions,
+      getTokenInfo,
+      initials,
+    };
+  },
+
+  template: `
+    <div v-if="checkingSession" class="checking">Memeriksa status login…</div>
+
+    <div v-else class="page">
+      <header>
+        <div class="brand">CNGPT — Demo SSO</div>
+        <div v-if="user" class="user-box">
+          <div class="avatar">{{ initials(user.name) }}</div>
+          <span>{{ user.name || user.email }}</span>
+          <button @click="logout">Logout</button>
+        </div>
+      </header>
+
+      <!-- ============ BELUM LOGIN ============ -->
+      <div v-if="!user" class="center-screen">
+        <div class="login-card">
+          <h1>Masuk ke CNGPT</h1>
+          <p>Gunakan akun Microsoft kantor kamu untuk melanjutkan (Single Sign-On).</p>
+
+          <button class="ms-login-btn" @click="login">
+            <span class="ms-icon"><span></span><span></span><span></span><span></span></span>
+            Login dengan Microsoft
+          </button>
+
+          <div v-if="loginError" class="error-box">{{ loginError }}</div>
+        </div>
+      </div>
+
+      <!-- ============ SUDAH LOGIN: CHAT ============ -->
+      <div v-else class="chat-wrap">
+        <!-- Authorization Warning Banner -->
+        <div v-if="needsConnectorAuth" class="auth-warning">
+          <div class="auth-warning-icon">⚠️</div>
+          <div class="auth-warning-content">
+            <div class="auth-warning-title">Connector Authorization Required</div>
+            <div class="auth-warning-text">
+              Outlook connector needs to be authorized before you can access your emails, calendar, and contacts.
+              <div v-if="authKeywords.length > 0" style="margin-top: 4px; font-size: 11px; opacity: 0.8;">
+                Detected keywords: {{ authKeywords.join(', ') }}
+              </div>
+            </div>
+            <button class="auth-warning-btn" @click="authorizeConnector">
+              🔐 Authorize Outlook Connector
+            </button>
+          </div>
+        </div>
+
+        <!-- Connector Management Panel -->
+        <div class="connector-panel">
+          <h3>🔌 Connector Management</h3>
+
+          <div class="connector-actions">
+            <button @click="getConnectorList" :disabled="loadingConnectors">
+              {{ loadingConnectors ? 'Loading...' : 'Get Connector List' }}
+            </button>
+            <button @click="getEngineConfig" :disabled="loadingConnectors">
+              {{ loadingConnectors ? 'Loading...' : 'Get Engine Config' }}
+            </button>
+          </div>
+
+          <div class="connector-actions" style="margin-top: 8px; border-top: 1px solid var(--border); padding-top: 12px;">
+            <button @click="listSessions" style="background: #6c757d;">
+              📋 List Sessions
+            </button>
+            <button @click="getTokenInfo" style="background: #17a2b8;">
+              🔍 Token Info
+            </button>
+            <button @click="clearAllSessions" style="background: #dc3545;">
+              🧹 Clear All Sessions
+            </button>
+          </div>
+
+          <!-- Connector List Display -->
+          <div v-if="connectors" class="connector-list">
+            <div v-if="connectors.dataStores && connectors.dataStores.length > 0">
+              <div v-for="(ds, idx) in connectors.dataStores" :key="idx" class="connector-item">
+                <div class="connector-item-header">
+                  <div>
+                    <div class="connector-item-name">{{ ds.displayName || ds.name }}</div>
+                    <div class="connector-item-id">{{ ds.name }}</div>
+                  </div>
+                  <button
+                    class="connector-detail-btn"
+                    @click="getConnectorDetail(ds.name.split('/').pop())"
+                  >
+                    Detail
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div v-else>
+              {{ JSON.stringify(connectors, null, 2) }}
+            </div>
+          </div>
+
+          <!-- Connector Detail Display -->
+          <div v-if="connectorDetail" class="connector-list" style="margin-top: 12px;">
+            <strong>📋 Connector Detail:</strong><br/><br/>
+            {{ JSON.stringify(connectorDetail, null, 2) }}
+          </div>
+
+          <!-- Engine Config Display -->
+          <div v-if="engineConfig" class="connector-list" style="margin-top: 12px;">
+            <strong>⚙️ Engine Configuration:</strong><br/><br/>
+            {{ JSON.stringify(engineConfig, null, 2) }}
+          </div>
+
+          <div v-if="!connectors && !engineConfig && !loadingConnectors" class="connector-list empty">
+            Click "Get Connector List" atau "Get Engine Config" untuk melihat informasi
+          </div>
+        </div>
+
+        <div class="messages" ref="messagesEl">
+          <div v-if="messages.length === 0" class="empty-state">
+            Halo {{ user.name || user.email }} 👋<br />
+            Coba tanya sesuatu, misalnya "ringkas email terbaru saya".
+          </div>
+
+          <div
+            v-for="(m, i) in messages"
+            :key="i"
+            class="bubble"
+            :class="m.role"
+          >
+            {{ m.text }}
+          </div>
+
+          <div v-if="sending" class="bubble pending">Gemini sedang menjawab…</div>
+        </div>
+
+        <div class="composer">
+          <input
+            v-model="chatInput"
+            type="text"
+            placeholder="Tulis pesan…"
+            @keyup.enter="sendMessage"
+            :disabled="sending"
+          />
+          <button @click="sendMessage" :disabled="sending || !chatInput.trim()">
+            Kirim
+          </button>
+        </div>
+      </div>
+    </div>
+  `,
+}).mount("#app");
+</script>
+</body>
+</html>

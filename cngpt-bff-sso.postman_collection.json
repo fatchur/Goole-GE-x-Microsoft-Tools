@@ -1,0 +1,170 @@
+{
+	"info": {
+		"name": "cngpt-bff-sso API",
+		"description": "Collection untuk BFF SSO dengan Microsoft Entra ID -> Google Workforce Identity -> Gemini Enterprise",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Health Check",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/healthz",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"healthz"
+					]
+				},
+				"description": "Endpoint untuk health check - tidak memerlukan autentikasi"
+			},
+			"response": []
+		},
+		{
+			"name": "Auth - Login (Browser Only)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/auth/login",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"auth",
+						"login"
+					]
+				},
+				"description": "Memulai OAuth flow dengan Microsoft Entra ID. Endpoint ini akan redirect ke Microsoft login page.\n\n**CATATAN**: Endpoint ini harus dibuka di browser, bukan di Postman, karena memerlukan interactive login dengan Microsoft."
+			},
+			"response": []
+		},
+		{
+			"name": "Auth - Callback (Auto)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/auth/callback?code=<code>&state=<state>",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"auth",
+						"callback"
+					],
+					"query": [
+						{
+							"key": "code",
+							"value": "<code>",
+							"description": "Authorization code dari Microsoft"
+						},
+						{
+							"key": "state",
+							"value": "<state>",
+							"description": "State parameter untuk validasi CSRF"
+						}
+					]
+				},
+				"description": "Callback endpoint yang dipanggil otomatis oleh Microsoft setelah user berhasil login.\n\n**CATATAN**: Endpoint ini dipanggil otomatis oleh Microsoft, tidak perlu dipanggil manual."
+			},
+			"response": []
+		},
+		{
+			"name": "Get Current User Info",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/me",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"me"
+					]
+				},
+				"description": "Mendapatkan informasi user yang sedang login (name dan email).\n\n**Memerlukan**: Cookie session yang didapat setelah login berhasil."
+			},
+			"response": []
+		},
+		{
+			"name": "Chat with Gemini",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"message\": \"Halo, apa kabar?\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/api/chat",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"chat"
+					]
+				},
+				"description": "Mengirim pesan ke Gemini Enterprise dan mendapatkan respons.\n\n**Memerlukan**: Cookie session yang didapat setelah login berhasil.\n\n**Body**: JSON dengan field `message` (string, required)"
+			},
+			"response": []
+		},
+		{
+			"name": "Logout",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/auth/logout",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"auth",
+						"logout"
+					]
+				},
+				"description": "Logout user dan menghapus session.\n\n**Memerlukan**: Cookie session yang didapat setelah login berhasil."
+			},
+			"response": []
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8080",
+			"type": "string"
+		}
+	]
+}
