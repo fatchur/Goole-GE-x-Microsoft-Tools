@@ -172,7 +172,7 @@ Ada 2 pendekatan yang direkomendasikan:
 User login SSO → Token exchange → Query Gemini API → Backend otomatis akses Outlook
 ```
 
-#### **Opsi 2: Manual Authorization via WebApp (Paling Simple untuk POC)**
+#### **Opsi 2: Manual Authorization via WebApp (Paling Simple untuk POC) ✅ VERIFIED WORKING**
 
 **Konsep:** User authorize Outlook connector **sekali** di Gemini Enterprise WebApp
 
@@ -180,19 +180,58 @@ User login SSO → Token exchange → Query Gemini API → Backend otomatis akse
 - ✅ Setup tercepat (tidak perlu konfigurasi admin)
 - ✅ Authorization tersimpan permanen (diikat ke Workforce Identity `assertion.sub`)
 - ✅ Bisa dipakai di semua aplikasi dengan Principal yang sama
+- ✅ **VERIFIED:** Custom app dengan proper request format bisa akses connector data
 
 **Cara:**
 1. User login ke custom app (SSO sudah berhasil)
 2. Instruksikan user: "Silakan authorize Outlook connector di https://gemini.google.com sekali saja"
 3. User buka Gemini webapp → klik "Connect" pada Outlook connector → authorize
-4. Kembali ke custom app → langsung bisa query email (tanpa perlu authorize lagi)
+4. Kembali ke custom app → langsung bisa query email
 5. Authorization valid permanen untuk user tersebut
 
 **Flow:**
 ```
 User authorize di Gemini WebApp (sekali) → Refresh token tersimpan di Google Vault
-→ Custom app query dengan Workforce token → Backend deteksi user → Pakai refresh token
+→ Custom app query dengan Workforce token + proper format → Backend deteksi user → Pakai refresh token
 ```
+
+**⚠️ PENTING: Request Format Requirements**
+
+Setelah authorization, custom app HARUS mengirim request dengan format yang benar:
+
+```json
+{
+  "query": {
+    "parts": [{"text": "Ringkas email terbaru saya"}]
+  },
+  "toolsSpec": {
+    "vertexAiSearchSpec": {
+      "dataStoreSpecs": [
+        {"dataStore": "projects/.../dataStores/outlook-federated-connector_*_mail"},
+        {"dataStore": "projects/.../dataStores/outlook-federated-connector_*_mail-attachment"},
+        {"dataStore": "projects/.../dataStores/outlook-federated-connector_*_calendar"},
+        {"dataStore": "projects/.../dataStores/outlook-federated-connector_*_contact"}
+      ]
+    }
+  }
+}
+```
+
+**Kenapa ini diperlukan:**
+- "Blended search" default TIDAK auto-include third-party connectors
+- Connector data stores harus dispesifikasikan eksplisit
+- Kode sudah diupdate di `internal/gemini/gemini.go` untuk include format ini
+
+**Setup di `.env`:**
+```bash
+# Tambahkan Outlook Connector ID
+OUTLOOK_CONNECTOR_ID=outlook-federated-connector_1783678287149
+
+# Atau format lengkap juga OK:
+OUTLOOK_CONNECTOR_ID=collections/outlook-federated-connector_1783678287149/dataConnector
+```
+
+Kode akan otomatis extract base ID dan build ke-4 data store paths.
 
 ### 🎯 Rekomendasi
 

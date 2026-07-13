@@ -199,13 +199,191 @@ function authorizeOutlookConnector() {
 
 ---
 
-### 🎯 REKOMENDASI FINAL
+## 🔍 CRITICAL DISCOVERY: Request Format Requirement
+
+### Problem yang Ditemukan
+
+Setelah user authorize connector di Gemini WebApp, custom app tetap tidak bisa akses data connector meskipun menggunakan Workforce token yang sama.
+
+**Root Cause:** Request format tidak lengkap!
+
+### Network Capture Analysis
+
+**Gemini WebApp Request (WORKING):**
+```json
+{
+  "query": {
+    "parts": [
+      {"text": "Ringkas email terbaru saya"}
+    ]
+  },
+  "toolsSpec": {
+    "vertexAiSearchSpec": {
+      "dataStoreSpecs": [
+        {
+          "dataStore": "projects/945912627556/locations/global/collections/default_collection/dataStores/outlook-federated-connector_1783678287149_mail"
+        },
+        {
+          "dataStore": "projects/945912627556/locations/global/collections/default_collection/dataStores/outlook-federated-connector_1783678287149_mail-attachment"
+        },
+        {
+          "dataStore": "projects/945912627556/locations/global/collections/default_collection/dataStores/outlook-federated-connector_1783678287149_calendar"
+        },
+        {
+          "dataStore": "projects/945912627556/locations/global/collections/default_collection/dataStores/outlook-federated-connector_1783678287149_contact"
+        }
+      ]
+    }
+  }
+}
+```
+
+**Custom App Request (NOT WORKING):**
+```json
+{
+  "query": {
+    "text": "Ringkas email terbaru saya"
+  }
+  // ❌ Missing toolsSpec!
+  // ❌ Gemini doesn't know which data stores to query
+}
+```
+
+### Key Findings
+
+1. **"Blended Search" Does NOT Auto-Include Third-Party Connectors**
+   - Default behavior hanya query Google-managed sources
+   - Third-party connectors (Outlook) HARUS dispesifikasikan eksplisit
+   - Tidak bisa rely pada "default" behavior
+
+2. **Data Store Specs Must Be Explicit**
+   - Harus list semua 4 data stores dari Outlook connector:
+     - `outlook-federated-connector_*_mail`
+     - `outlook-federated-connector_*_mail-attachment`
+     - `outlook-federated-connector_*_calendar`
+     - `outlook-federated-connector_*_contact`
+
+3. **Query Format Changed**
+   - Old: `query.text` (string)
+   - New: `query.parts[].text` (array of objects)
+
+### Solution Implementation
+
+**Updated `internal/gemini/gemini.go`:**
+
+```go
+type queryRequest struct {
+	Query struct {
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	} `json:"query"`
+	ToolsSpec *struct {
+		VertexAISearchSpec *struct {
+			DataStoreSpecs []struct {
+				DataStore string `json:"dataStore"`
+			} `json:"dataStoreSpecs"`
+		} `json:"vertexAiSearchSpec,omitempty"`
+	} `json:"toolsSpec,omitempty"`
+}
+
+func (c *Client) Ask(googleAccessToken, questionText string) (json.RawMessage, error) {
+	url := fmt.Sprintf(
+		"%s/v1alpha/projects/%s/locations/%s/collections/default_collection/engines/%s/assistants/default_assistant:streamAssist",
+		c.baseURL(), c.cfg.GCPProjectID, c.cfg.GeminiLocation, c.cfg.GeminiAppID,
+	)
+
+	var reqBody queryRequest
+	reqBody.Query.Parts = []struct {
+		Text string `json:"text"`
+	}{
+		{Text: questionText},
+	}
+
+	// Add toolsSpec to explicitly include Outlook connector data stores
+	if c.cfg.OutlookConnectorID != "" {
+		// Extract base connector ID (e.g., "outlook-federated-connector_1783678287149")
+		baseID := extractConnectorBaseID(c.cfg.OutlookConnectorID)
+
+		reqBody.ToolsSpec = &struct {
+			VertexAISearchSpec *struct {
+				DataStoreSpecs []struct {
+					DataStore string `json:"dataStore"`
+				} `json:"dataStoreSpecs"`
+			} `json:"vertexAiSearchSpec,omitempty"`
+		}{
+			VertexAISearchSpec: &struct {
+				DataStoreSpecs []struct {
+					DataStore string `json:"dataStore"`
+				} `json:"dataStoreSpecs"`
+			}{
+				DataStoreSpecs: []struct {
+					DataStore string `json:"dataStore"`
+				}{
+					{DataStore: fmt.Sprintf("projects/%s/locations/global/collections/default_collection/dataStores/%s_mail", c.cfg.GCPProjectID, baseID)},
+					{DataStore: fmt.Sprintf("projects/%s/locations/global/collections/default_collection/dataStores/%s_mail-attachment", c.cfg.GCPProjectID, baseID)},
+					{DataStore: fmt.Sprintf("projects/%s/locations/global/collections/default_collection/dataStores/%s_calendar", c.cfg.GCPProjectID, baseID)},
+					{DataStore: fmt.Sprintf("projects/%s/locations/global/collections/default_collection/dataStores/%s_contact", c.cfg.GCPProjectID, baseID)},
+				},
+			},
+		}
+	}
+
+	// ... rest of the code
+}
+```
+
+### Verification: Manual Authorization WORKS!
+
+**Complete Flow:**
+
+```
+1. User authorize connector di Gemini WebApp (one-time)
+   ↓
+2. Refresh token tersimpan di Google Vault
+   Tied to: Workforce Principal (principal://iam.googleapis.com/.../subject/abc-123)
+   ↓
+3. Custom app login dengan same Microsoft account
+   ↓
+4. Token exchange → same Workforce Principal
+   ↓
+5. Custom app query Gemini API dengan:
+   ✅ Workforce token (same Principal)
+   ✅ Proper request format (include dataStoreSpecs)
+   ↓
+6. Gemini API:
+   ✅ Recognize Principal
+   ✅ Fetch refresh token dari Vault (tied to Principal)
+   ✅ Query Outlook dengan refresh token
+   ✅ Return results with email/calendar data! ✅
+```
+
+**Confirmation:**
+- ✅ Authorization IS shared across apps (via Workforce Principal)
+- ✅ No need to re-authorize in custom app
+- ✅ Only need correct request format
+- ✅ Manual authorization via WebApp is SUFFICIENT
+
+---
+
+### 🎯 REKOMENDASI FINAL (UPDATED)
+
+**Untuk POC/Development:**
+→ Gunakan **Solusi 2 (Manual Authorization via WebApp)** + **Proper Request Format**
+
+**Steps:**
+1. User login ke custom app via SSO
+2. Instruksikan user: "Please authorize Outlook connector at https://gemini.google.com once"
+3. User buka Gemini WebApp, authorize connector (one-time)
+4. Kembali ke custom app
+5. Custom app query dengan proper request format (include dataStoreSpecs)
+6. ✅ Connector data accessible!
 
 **Untuk Production Enterprise App:**
 → Gunakan **Solusi 1 (Service-Level / Admin Consent)**
 
 **Alasan:**
-1. Paling seamless untuk end-user
+1. Paling seamless untuk end-user (no manual authorization step)
 2. Standard enterprise integration pattern
 3. Lebih secure (domain-wide delegation)
 4. Lebih maintainable (no popup complexity)
