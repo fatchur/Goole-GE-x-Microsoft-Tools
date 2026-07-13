@@ -47,6 +47,11 @@ func main() {
 	app.Get("/auth/callback", h.Callback)
 	app.Post("/auth/logout", h.Logout)
 
+	// --- Connector authorization (OAuth terpisah untuk Outlook) ---
+	app.Get("/auth/connector/authorize", h.ConnectorLogin)
+	app.Get("/auth/connector/callback", h.ConnectorCallback)
+	app.Get("/api/connector/status", h.ConnectorStatus)
+
 	// --- Rute API (butuh login) ---
 	app.Get("/api/me", h.Me)
 	app.Post("/api/chat", h.Chat)

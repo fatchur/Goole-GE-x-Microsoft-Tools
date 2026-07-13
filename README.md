@@ -134,3 +134,83 @@ Nilai-nilai ini sudah ada di `.env.example`, hasil dari Bagian 1–4 dokumentasi
 > majucepat.net + Azure Free Trial pribadi). Saat replikasi ke tenant
 > produksi CIMB Niaga, ganti semua nilai ini sesuai App Registration dan
 > Workforce Pool yang baru.
+
+---
+
+## Connector Authorization (Outlook/Office 365)
+
+### ⚠️ Penting: Endpoint Private API
+
+Setelah investigasi mendalam dan komunikasi dengan Google, kami mendapatkan konfirmasi bahwa:
+
+**❌ Endpoint `acquireAndStoreRefreshToken` TIDAK TERSEDIA untuk public API**
+- Method ini adalah **private/internal API** eksklusif untuk Gemini WebApp
+- Semua percobaan untuk memanggil endpoint ini dari custom app akan menghasilkan **404 Not Found**
+- Bukan masalah permissions, whitelist, atau preview - endpoint memang tidak diekspos
+
+### ✅ Solusi Resmi dari Google
+
+Ada 2 pendekatan yang direkomendasikan:
+
+#### **Opsi 1: Service-Level Authorization (Recommended untuk Production)**
+
+**Konsep:** Admin IT melakukan authorization di level organisasi/tenant (bukan per-user)
+
+**Keuntungan:**
+- ✅ User experience paling smooth (tidak perlu authorize connector)
+- ✅ User cukup login SSO → langsung bisa query email/calendar
+- ✅ Standard enterprise B2B integration pattern
+- ✅ Scalable untuk ribuan users
+
+**Setup Required:**
+1. **Di Microsoft Entra ID:** Admin grant Domain-Wide Delegation untuk Service Account
+2. **Di GCP Console:** Konfigurasi connector dengan Service Account credentials
+3. **Di Custom App:** Tidak perlu kode connector authorization - langsung query Gemini API
+
+**Flow:**
+```
+User login SSO → Token exchange → Query Gemini API → Backend otomatis akses Outlook
+```
+
+#### **Opsi 2: Manual Authorization via WebApp (Paling Simple untuk POC)**
+
+**Konsep:** User authorize Outlook connector **sekali** di Gemini Enterprise WebApp
+
+**Keuntungan:**
+- ✅ Setup tercepat (tidak perlu konfigurasi admin)
+- ✅ Authorization tersimpan permanen (diikat ke Workforce Identity `assertion.sub`)
+- ✅ Bisa dipakai di semua aplikasi dengan Principal yang sama
+
+**Cara:**
+1. User login ke custom app (SSO sudah berhasil)
+2. Instruksikan user: "Silakan authorize Outlook connector di https://gemini.google.com sekali saja"
+3. User buka Gemini webapp → klik "Connect" pada Outlook connector → authorize
+4. Kembali ke custom app → langsung bisa query email (tanpa perlu authorize lagi)
+5. Authorization valid permanen untuk user tersebut
+
+**Flow:**
+```
+User authorize di Gemini WebApp (sekali) → Refresh token tersimpan di Google Vault
+→ Custom app query dengan Workforce token → Backend deteksi user → Pakai refresh token
+```
+
+### 🎯 Rekomendasi
+
+- **Untuk Production:** Gunakan **Opsi 1 (Service-Level Authorization)**
+- **Untuk POC/Testing:** Gunakan **Opsi 2 (Manual Authorization)**
+
+### 📚 Detail Lengkap
+
+Untuk penjelasan lengkap tentang investigasi dan solusi connector authorization, lihat:
+- [CONNECTOR_AUTH_SOLUTION.md](./CONNECTOR_AUTH_SOLUTION.md) - Investigasi lengkap dan final resolution dari Google
+- [CONNECTOR_IMPLEMENTATION_COMPLETE.md](./CONNECTOR_IMPLEMENTATION_COMPLETE.md) - Implementasi teknis yang sudah dikerjakan
+
+### 🔍 Key Learnings
+
+**Yang Kami Pelajari:**
+1. Tidak semua endpoint di network capture adalah public API
+2. Google menerapkan Zero-Trust untuk OAuth pihak ketiga (security by design)
+3. Enterprise integration berbeda dengan individual use case
+4. Federated identity sangat powerful - authorization diikat ke Principal ID, bukan aplikasi
+
+---

@@ -1,6 +1,264 @@
 # Connector Authorization Solution - Based on Investigation
 
-## Discovery Summary
+---
+
+## ⚠️ FINAL RESOLUTION FROM GOOGLE (CRITICAL UPDATE)
+
+**Date:** 2026-07-12
+
+### TL;DR - Endpoint `acquireAndStoreRefreshToken` TIDAK TERSEDIA untuk Public API
+
+Setelah iterasi troubleshooting dan komunikasi langsung dengan Google, kami mendapat konfirmasi resmi:
+
+**❌ Method `acquireAndStoreRefreshToken` adalah PRIVATE/INTERNAL API**
+- Endpoint ini eksklusif untuk Control Plane internal Gemini WebApp
+- TIDAK diekspos di Public REST API (`discoveryengine.googleapis.com`)
+- Pemanggilan dari aplikasi custom akan SELALU mengembalikan **404 Not Found**
+- Bukan masalah whitelist, preview, atau IAM permissions
+
+### Mengapa Google Mendesainnya Seperti Ini?
+
+**1. Zero-Trust OAuth Handling (Keamanan)**
+
+Google menerapkan isolasi ketat untuk refresh token pihak ketiga (Microsoft Outlook):
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ MICROSOFT REFRESH TOKEN = HIGHLY SENSITIVE                  │
+│ (Akses penuh ke email/dokumen perusahaan user)              │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+        ┌───────────────────────────────────────┐
+        │ Google Vault & Secret Isolation       │
+        │ • Hanya WebApp resmi yang bisa handle │
+        │ • Custom backend TIDAK BOLEH akses    │
+        │ • Mencegah token interception         │
+        └───────────────────────────────────────┘
+```
+
+**Alasan Keamanan:**
+- **Google Vault Isolation:** Refresh token Microsoft disimpan di Vault internal Google yang terisolasi
+- **Consent Boundary:** Proses OAuth hanya boleh terjadi di domain Google resmi (`*.gemini.google.com`, `*.cloud.google.com`)
+- **Zero-Trust:** Aplikasi pihak ketiga (termasuk custom backend) TIDAK dipercaya untuk menangani token OAuth Microsoft
+
+**2. API Surface Limitation**
+
+Dokumentasi publik Google untuk Data Connector hanya menyediakan API untuk:
+- ✅ `Create` connector configuration
+- ✅ `Update` connector configuration
+- ✅ `List` connectors
+- ✅ `Delete` connectors
+
+**TIDAK termasuk:**
+- ❌ `acquireAndStoreRefreshToken` - Mengalirkan authorization code individual user
+- ❌ `updateEngineUserData` - Set `authState: AUTHORIZED` manual
+- ❌ Endpoint lain untuk per-user OAuth token handling
+
+---
+
+### ✅ SOLUSI RESMI DARI GOOGLE
+
+#### **Solusi 1: Service-Level / Admin Consent (🌟 SANGAT DIREKOMENDASIKAN)**
+
+**Konsep:** Authorization di level **tenant/organisasi**, bukan per-user
+
+**Cara Kerja:**
+```
+┌──────────────────────────────────────────────────────────────┐
+│ 1. Admin IT Setup (Sekali Saja)                             │
+│    • Konfigurasi Domain-Wide Delegation di Microsoft        │
+│    • Setup connector dengan Service Account di GCP          │
+│    • Approve akses skala organisasi                         │
+└──────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 2. User Login ke Custom App                                 │
+│    • SSO via Microsoft Entra ID                             │
+│    • Token exchange ke Google Workforce Identity            │
+│    • Dapat token ya29...                                    │
+└──────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 3. Query Gemini API Langsung                                │
+│    • POST /streamAssist dengan Bearer ya29...               │
+│    • Backend Gemini deteksi assertion.sub user              │
+│    • OTOMATIS gunakan Service Account untuk akses Outlook   │
+│    • User bisa query email tanpa authorize lagi             │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Kelebihan:**
+- ✅ UX paling smooth (user tidak perlu step tambahan)
+- ✅ Secure (menggunakan service account standard)
+- ✅ Standard enterprise B2B integration pattern
+- ✅ Maintainable (tidak ada popup/iframe complexity)
+
+**Implementasi di Custom App:**
+```go
+// ❌ TIDAK PERLU kode connector authorization
+// ❌ TIDAK PERLU /auth/connector/authorize
+// ❌ TIDAK PERLU /auth/connector/callback
+// ❌ TIDAK PERLU acquireAndStoreRefreshToken
+
+// ✅ CUKUP:
+// 1. User login SSO → dapat Workforce token
+// 2. Panggil Gemini API dengan token tersebut
+// 3. Backend Gemini otomatis akses Outlook via Service Account
+```
+
+**Langkah Setup:**
+1. **Di Microsoft Entra ID:**
+   - Admin grant consent untuk Graph API permissions (Mail.Read, Calendars.Read, dll.)
+   - Setup Domain-Wide Delegation untuk Service Account Google
+
+2. **Di GCP Console:**
+   - Konfigurasi connector dengan Service Account credentials
+   - Assign IAM permissions: `roles/discoveryengine.editor`
+
+3. **Di Custom App:**
+   - Hapus semua kode connector authorization
+   - Langsung query Gemini API setelah user login SSO
+
+---
+
+#### **Solusi 2: Embed/Popup WebApp Authorization (Per-User Consent)**
+
+**Konsep:** User authorize di halaman resmi Google via popup/iframe
+
+**Cara Kerja:**
+```
+┌──────────────────────────────────────────────────────────────┐
+│ 1. User di Custom App                                       │
+│    • Sudah login SSO                                        │
+│    • Klik tombol "Connect Outlook"                          │
+└──────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 2. Popup Window Terbuka                                     │
+│    • URL: https://gemini.google.com/connector/authorize     │
+│    • User authorize di halaman RESMI Google                 │
+│    • OAuth flow dihandle oleh Google WebApp                 │
+└──────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 3. Popup Tertutup Otomatis                                  │
+│    • Custom app deteksi popup closed                        │
+│    • Refresh connector status                               │
+│    • User bisa query email                                  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Kelebihan:**
+- ✅ Per-user consent (comply dengan strict privacy policy)
+- ✅ Secure (OAuth di domain Google resmi)
+- ✅ Satu flow dalam custom app (tidak keluar aplikasi)
+
+**Kekurangan:**
+- ⚠️ UX agak clunky (popup window management)
+- ⚠️ Butuh state management antara popup dan main window
+
+**Implementasi di Custom App:**
+```javascript
+// Frontend
+function authorizeOutlookConnector() {
+  const width = 600;
+  const height = 700;
+  const left = (screen.width - width) / 2;
+  const top = (screen.height - height) / 2;
+
+  // Buka popup ke halaman RESMI Gemini Enterprise
+  const popup = window.open(
+    'https://gemini.google.com/app/connector/authorize?connector_id=outlook-federated-connector_1783678287149',
+    'OutlookAuthorization',
+    `width=${width},height=${height},left=${left},top=${top}`
+  );
+
+  // Polling untuk deteksi popup tertutup
+  const checkPopup = setInterval(async () => {
+    if (popup.closed) {
+      clearInterval(checkPopup);
+
+      // Refresh status connector
+      await checkConnectorStatus();
+
+      // Lanjut query
+      alert('Outlook connector authorized!');
+    }
+  }, 500);
+}
+```
+
+**Catatan Penting:**
+- URL exact popup bisa berbeda (perlu dicari URL resmi dari Gemini Enterprise)
+- Atau, arahkan user untuk satu kali authorize di Gemini webapp secara manual
+
+---
+
+### 🎯 REKOMENDASI FINAL
+
+**Untuk Production Enterprise App:**
+→ Gunakan **Solusi 1 (Service-Level / Admin Consent)**
+
+**Alasan:**
+1. Paling seamless untuk end-user
+2. Standard enterprise integration pattern
+3. Lebih secure (domain-wide delegation)
+4. Lebih maintainable (no popup complexity)
+5. Scalable untuk ribuan users
+
+**Untuk Prototype / POC:**
+→ Gunakan **Manual Authorization** (paling simple)
+
+**Cara:**
+1. User login ke custom app (SSO)
+2. **Instruksikan user:** "Please authorize Outlook connector at https://gemini.google.com once"
+3. User buka Gemini webapp → authorize Outlook (sekali saja)
+4. Kembali ke custom app → langsung bisa query
+5. Authorization tersimpan permanent (diikat ke `assertion.sub`)
+
+---
+
+### 📊 Status Final Implementasi
+
+| Komponen | Status | Keterangan |
+|----------|--------|------------|
+| ✅ Microsoft SSO | **WORKING** | Login via Entra ID berhasil |
+| ✅ Workforce Identity Token Exchange | **WORKING** | STS exchange dengan `assertion.sub` berhasil |
+| ❌ `acquireAndStoreRefreshToken` endpoint | **TIDAK TERSEDIA** | Private API, tidak untuk public use |
+| ✅ Gemini Query API | **READY TO USE** | Langsung panggil dengan token `ya29...` |
+| 🔄 Connector Authorization | **USE WEBAPP** | User authorize sekali di Gemini webapp, atau implement Admin Consent |
+
+---
+
+### 📚 Lessons Learned
+
+**Apa yang Kami Pelajari:**
+
+1. **Tidak semua endpoint di network capture adalah public API**
+   - WebApp internal bisa menggunakan private endpoints
+   - Dokumentasi public API adalah source of truth
+
+2. **Google menerapkan Zero-Trust untuk OAuth pihak ketiga**
+   - Security by design: isolasi refresh token di Google Vault
+   - Custom apps tidak dipercaya untuk handle OAuth tokens
+
+3. **Enterprise integration berbeda dengan individual use case**
+   - Service-level authorization (admin consent) adalah pattern yang benar
+   - Per-user OAuth delegation bukan untuk custom enterprise apps
+
+4. **Federated identity sangat powerful**
+   - User authorize sekali di platform manapun (webapp/custom app)
+   - Authorization diikat ke Workforce Identity (`assertion.sub`)
+   - Token bisa dipakai di semua aplikasi dengan Principal yang sama
+
+---
+
+## Discovery Summary (Historical Investigation)
 
 From network capture, we found the connector authorization flow:
 

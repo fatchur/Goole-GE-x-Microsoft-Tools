@@ -745,24 +745,72 @@ createApp({
     }
 
     // -------------------------------------------------------------
-    // 8) Open Gemini Enterprise webapp for connector authorization
+    // 8) Check connector authorization status
+    // -------------------------------------------------------------
+    async function checkConnectorStatus() {
+      try {
+        console.log("[DEBUG] Checking connector authorization status...");
+        const res = await fetch(`${BACKEND_URL}/api/connector/status`, {
+          credentials: "include",
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          console.log("[DEBUG] Connector status:", data);
+          return data.authorized;
+        } else {
+          console.error("[DEBUG] Failed to check connector status:", res.status);
+          return false;
+        }
+      } catch (e) {
+        console.error("[DEBUG] Error checking connector status:", e);
+        return false;
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 9) Open popup for connector authorization (Microsoft OAuth)
     // -------------------------------------------------------------
     function authorizeConnector() {
-      // Open Gemini Enterprise webapp in new tab
-      // User needs to authorize the connector there
-      const geminiWebappURL = "https://gemini.google.com/app";
-      window.open(geminiWebappURL, '_blank');
+      console.log("[DEBUG] 🔌 Opening connector authorization popup...");
 
-      // Optionally reset the flag after some time or user action
-      setTimeout(() => {
-        const confirmed = confirm(
-          "Apakah Anda sudah authorize connector di Gemini Enterprise webapp?\n\n" +
-          "Click OK jika sudah selesai authorize, lalu coba query lagi."
-        );
-        if (confirmed) {
-          needsConnectorAuth.value = false;
+      // Calculate center position for popup
+      const width = 500;
+      const height = 600;
+      const left = (screen.width - width) / 2;
+      const top = (screen.height - height) / 2;
+
+      // Open popup window
+      const popup = window.open(
+        `${BACKEND_URL}/auth/connector/authorize`,
+        'ConnectorAuthorization',
+        `width=${width},height=${height},left=${left},top=${top},toolbar=no,menubar=no,scrollbars=yes`
+      );
+
+      if (!popup) {
+        alert('❌ Popup blocked! Please allow popups for this site and try again.');
+        return;
+      }
+
+      // Poll to detect when popup closes
+      const checkPopup = setInterval(async () => {
+        if (popup.closed) {
+          clearInterval(checkPopup);
+          console.log("[DEBUG] Popup closed, checking connector status...");
+
+          // Check if connector is now authorized
+          const authorized = await checkConnectorStatus();
+
+          if (authorized) {
+            console.log("[DEBUG] ✅ Connector authorized!");
+            alert('✅ Outlook connector authorized! You can now query your emails and calendar.');
+            needsConnectorAuth.value = false;
+          } else {
+            console.log("[DEBUG] ⚠️  Connector still not authorized");
+            alert('⚠️ Connector authorization may have failed or was cancelled. Please try again.');
+          }
         }
-      }, 3000);
+      }, 500); // Check every 500ms
     }
 
     function initials(name) {
@@ -797,6 +845,7 @@ createApp({
       getConnectorList,
       getConnectorDetail,
       getEngineConfig,
+      checkConnectorStatus,
       authorizeConnector,
       clearAllSessions,
       listSessions,
@@ -862,6 +911,9 @@ createApp({
             </button>
             <button @click="getEngineConfig" :disabled="loadingConnectors">
               {{ loadingConnectors ? 'Loading...' : 'Get Engine Config' }}
+            </button>
+            <button @click="authorizeConnector" style="background: #28a745;">
+              🔐 Authorize Connector
             </button>
           </div>
 
