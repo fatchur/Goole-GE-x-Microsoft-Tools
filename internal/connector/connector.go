@@ -41,6 +41,23 @@ func (c *Client) AuthCodeURL(state string) string {
 	return base + "?" + q.Encode()
 }
 
+// AuthCodeURLWithCustomRedirect builds OAuth URL with custom redirect URI
+// EXPERIMENTAL: For testing authorization flow with Google's callback
+func (c *Client) AuthCodeURLWithCustomRedirect(state, customRedirectURI string) string {
+	base := fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/authorize", c.cfg.EntraTenantID)
+
+	q := url.Values{}
+	q.Set("client_id", c.cfg.ConnectorClientID)
+	q.Set("response_type", "code")
+	q.Set("redirect_uri", customRedirectURI) // Use custom redirect
+	q.Set("scope", "https://graph.microsoft.com/.default offline_access")
+	q.Set("state", state)
+	q.Set("response_mode", "query")
+	q.Set("prompt", "select_account")
+
+	return base + "?" + q.Encode()
+}
+
 type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`

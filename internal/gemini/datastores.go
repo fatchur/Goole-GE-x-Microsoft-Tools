@@ -12,7 +12,7 @@ import (
 func (c *Client) ListDataStores(googleAccessToken string) (json.RawMessage, error) {
 	url := fmt.Sprintf(
 		"%s/v1alpha/projects/%s/locations/%s/collections/default_collection/dataStores",
-		c.baseURL(), c.cfg.GCPProjectID, c.cfg.GeminiLocation,
+		c.baseURL(), c.cfg.GCPProjectNumber, c.cfg.GeminiLocation,
 	)
 
 	fmt.Printf("[DEBUG] List Data Stores API Call:\n")
@@ -23,7 +23,7 @@ func (c *Client) ListDataStores(googleAccessToken string) (json.RawMessage, erro
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+googleAccessToken)
-	req.Header.Set("x-goog-user-project", c.cfg.GCPProjectID)
+	req.Header.Set("x-goog-user-project", c.cfg.GCPProjectNumber)
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -48,7 +48,7 @@ func (c *Client) ListDataStores(googleAccessToken string) (json.RawMessage, erro
 func (c *Client) GetDataStore(googleAccessToken, dataStoreID string) (json.RawMessage, error) {
 	url := fmt.Sprintf(
 		"%s/v1/projects/%s/locations/%s/collections/default_collection/dataStores/%s",
-		c.baseURL(), c.cfg.GCPProjectID, c.cfg.GeminiLocation, dataStoreID,
+		c.baseURL(), c.cfg.GCPProjectNumber, c.cfg.GeminiLocation, dataStoreID,
 	)
 
 	fmt.Printf("[DEBUG] Get Data Store API Call:\n")
@@ -60,7 +60,7 @@ func (c *Client) GetDataStore(googleAccessToken, dataStoreID string) (json.RawMe
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+googleAccessToken)
-	req.Header.Set("x-goog-user-project", c.cfg.GCPProjectID)
+	req.Header.Set("x-goog-user-project", c.cfg.GCPProjectNumber)
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -84,7 +84,7 @@ func (c *Client) GetDataStore(googleAccessToken, dataStoreID string) (json.RawMe
 func (c *Client) GetEngine(googleAccessToken string) (json.RawMessage, error) {
 	url := fmt.Sprintf(
 		"%s/v1alpha/projects/%s/locations/%s/collections/default_collection/engines/%s",
-		c.baseURL(), c.cfg.GCPProjectID, c.cfg.GeminiLocation, c.cfg.GeminiAppID,
+		c.baseURL(), c.cfg.GCPProjectNumber, c.cfg.GeminiLocation, c.cfg.GeminiAppID,
 	)
 
 	fmt.Printf("[DEBUG] Get Engine API Call:\n")
@@ -95,7 +95,7 @@ func (c *Client) GetEngine(googleAccessToken string) (json.RawMessage, error) {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+googleAccessToken)
-	req.Header.Set("x-goog-user-project", c.cfg.GCPProjectID)
+	req.Header.Set("x-goog-user-project", c.cfg.GCPProjectNumber)
 
 	resp, err := c.hc.Do(req)
 	if err != nil {

@@ -26,6 +26,15 @@ type UserSession struct {
 	GoogleAccessToken string
 	GoogleTokenExpiry time.Time
 
+	// Workforce Identity Principal (subject dari Google Access Token JWT).
+	// Format: principal://iam.googleapis.com/projects/.../subject/ABC123
+	// Diperlukan untuk connector authorization state parameter.
+	WorkforcePrincipal string
+
+	// Gemini Enterprise session ID for file context management.
+	// Used to maintain conversational context and file attachments across requests.
+	GeminiSessionID string
+
 	// Token Microsoft Graph API untuk connector access (Outlook data).
 	// Didapat dari separate OAuth flow menggunakan Connector App Registration.
 	ConnectorAccessToken  string

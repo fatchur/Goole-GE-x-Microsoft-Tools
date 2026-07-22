@@ -13,9 +13,12 @@ package handlers
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -27,6 +30,7 @@ import (
 	"cngpt-bff-sso/internal/connector"
 	"cngpt-bff-sso/internal/entra"
 	"cngpt-bff-sso/internal/gcpsts"
+	"cngpt-bff-sso/internal/gcs"
 	"cngpt-bff-sso/internal/gemini"
 	"cngpt-bff-sso/internal/session"
 )
@@ -43,6 +47,7 @@ type Handler struct {
 	connectorClient *connector.Client
 	stsClient       *gcpsts.Client
 	geminiClient    *gemini.Client
+	gcsClient       *gcs.Client
 	sessions        *session.Store
 
 	// Connector OAuth state tracking
@@ -51,12 +56,20 @@ type Handler struct {
 }
 
 func New(cfg *config.Config) *Handler {
+	// Initialize GCS client (with error handling)
+	gcsClient, err := gcs.NewClient(cfg)
+	if err != nil {
+		log.Printf("[WARNING] Failed to initialize GCS client: %v", err)
+		log.Printf("[WARNING] File upload will not work. Make sure GOOGLE_APPLICATION_CREDENTIALS is set.")
+	}
+
 	return &Handler{
 		cfg:             cfg,
 		entraClient:     entra.NewClient(cfg),
 		connectorClient: connector.NewClient(cfg),
 		stsClient:       gcpsts.NewClient(cfg),
 		geminiClient:    gemini.NewClient(cfg),
+		gcsClient:       gcsClient,
 		sessions:        session.NewStore(),
 		connectorStates: make(map[string]string),
 	}
@@ -69,6 +82,36 @@ func randomString(nBytes int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// extractPrincipalFromGoogleToken decodes Google Access Token (JWT) and extracts the principal (sub claim)
+// Google Workforce Identity tokens have format: principal://iam.googleapis.com/projects/.../subject/ABC123
+func extractPrincipalFromGoogleToken(token string) (string, error) {
+	// JWT format: header.payload.signature
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", errors.New("invalid JWT format")
+	}
+
+	// Decode payload (base64 URL encoding)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("failed to decode JWT payload: %w", err)
+	}
+
+	// Parse JSON to extract "sub" claim
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", fmt.Errorf("failed to parse JWT claims: %w", err)
+	}
+
+	if claims.Sub == "" {
+		return "", errors.New("sub claim not found in token")
+	}
+
+	return claims.Sub, nil
 }
 
 // --- 1. GET /auth/login -----------------------------------------------
@@ -154,17 +197,27 @@ func (h *Handler) Callback(c *fiber.Ctx) error {
 	fmt.Printf("[DEBUG] Google Access Token received (expires in %d seconds)\n", expiresIn)
 	fmt.Printf("[DEBUG] Token preview: %s...\n", googleToken[:50])
 
+	// Extract Workforce Principal from Google token (needed for connector authorization)
+	principal, err := extractPrincipalFromGoogleToken(googleToken)
+	if err != nil {
+		fmt.Printf("[DEBUG] ⚠️  Failed to extract principal from token: %v\n", err)
+		principal = "" // Continue without principal (optional feature)
+	} else {
+		fmt.Printf("[DEBUG] ✅ Workforce Principal extracted: %s\n", principal)
+	}
+
 	// d) Simpan semuanya di session SERVER. Browser tidak pernah melihat idToken/googleToken.
 	sessionID, err := randomString(24)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).SendString("gagal membuat session id")
 	}
 	h.sessions.Set(sessionID, &session.UserSession{
-		Name:              claims.Name,
-		Email:             claims.Email,
-		GoogleAccessToken: googleToken,
-		GoogleTokenExpiry: time.Now().Add(time.Duration(expiresIn) * time.Second),
-		CreatedAt:         time.Now(),
+		Name:               claims.Name,
+		Email:              claims.Email,
+		GoogleAccessToken:  googleToken,
+		GoogleTokenExpiry:  time.Now().Add(time.Duration(expiresIn) * time.Second),
+		WorkforcePrincipal: principal,
+		CreatedAt:          time.Now(),
 	})
 
 	// e) Browser hanya diberi session ID lewat cookie httpOnly.
@@ -213,10 +266,90 @@ func (h *Handler) Me(c *fiber.Ctx) error {
 	})
 }
 
-// --- 4. POST /api/chat -----------------------------------------------
+// --- 4. POST /api/files/upload ----------------------------------------
+
+type fileUploadResponse struct {
+	GCSURI   string `json:"gcsUri"`   // GCS URI (gs://bucket/path)
+	FileName string `json:"fileName"` // Original filename
+	FileSize int64  `json:"fileSize"` // File size in bytes
+	MimeType string `json:"mimeType"` // MIME type
+}
+
+func (h *Handler) UploadFile(c *fiber.Ctx) error {
+	sess, _, ok := h.currentSession(c)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "belum login"})
+	}
+
+	if time.Now().After(sess.GoogleTokenExpiry) {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "sesi Google kedaluwarsa, silakan login ulang",
+		})
+	}
+
+	// Check if GCS client is initialized
+	if h.gcsClient == nil {
+		fmt.Printf("[DEBUG] ❌ GCS client not initialized\n")
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "file upload service not available (GCS not configured)",
+		})
+	}
+
+	// Get file from form
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		fmt.Printf("[DEBUG] ❌ Failed to get file from form: %v\n", err)
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "file not found in request"})
+	}
+
+	fileName := fileHeader.Filename
+	fileMimeType := fileHeader.Header.Get("Content-Type")
+	fileSize := fileHeader.Size
+
+	fmt.Printf("[DEBUG] 📤 File upload request:\n")
+	fmt.Printf("  - User: %s\n", sess.Email)
+	fmt.Printf("  - File name: %s\n", fileName)
+	fmt.Printf("  - MIME type: %s\n", fileMimeType)
+	fmt.Printf("  - Size: %d bytes (%.2f KB)\n", fileSize, float64(fileSize)/1024)
+
+	// Validate file size (max 10MB)
+	maxSize := int64(10 * 1024 * 1024)
+	if fileSize > maxSize {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "file too large, maximum 10MB"})
+	}
+
+	// Open file
+	file, err := fileHeader.Open()
+	if err != nil {
+		fmt.Printf("[DEBUG] ❌ Failed to open file: %v\n", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to read file"})
+	}
+	defer file.Close()
+
+	// Upload file to GCS
+	fmt.Printf("[DEBUG] Uploading file to GCS...\n")
+	ctx := c.Context()
+	gcsURI, err := h.gcsClient.UploadFile(ctx, fileName, fileMimeType, file)
+	if err != nil {
+		fmt.Printf("[DEBUG] ❌ Failed to upload file to GCS: %v\n", err)
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "failed to upload file: " + err.Error()})
+	}
+
+	fmt.Printf("[DEBUG] ✅ File uploaded successfully: %s\n", gcsURI)
+
+	return c.JSON(fileUploadResponse{
+		GCSURI:   gcsURI,
+		FileName: fileName,
+		FileSize: fileSize,
+		MimeType: fileMimeType,
+	})
+}
+
+// --- 5. POST /api/chat -----------------------------------------------
 
 type chatRequest struct {
-	Message string `json:"message"`
+	Message string   `json:"message"`
+	GCSURIs []string `json:"gcsUris,omitempty"` // Optional GCS URIs from upload (gs://bucket/path)
 }
 
 type chatResponse struct {
@@ -241,24 +374,49 @@ func (h *Handler) Chat(c *fiber.Ctx) error {
 		})
 	}
 
+	// Parse JSON request body
 	var body chatRequest
-	if err := c.BodyParser(&body); err != nil || body.Message == "" {
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+	}
+
+	if body.Message == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "field 'message' wajib diisi"})
 	}
+
+	fmt.Printf("[DEBUG] 💬 Chat request:\n")
+	fmt.Printf("  - User: %s\n", sess.Email)
+	fmt.Printf("  - Message: %s\n", body.Message)
+	fmt.Printf("  - GCS URIs: %v\n", body.GCSURIs)
 
 	// PENTING: Gemini API SELALU dipanggil dengan Google Workforce Identity token
 	// Connector token (Microsoft Graph) TIDAK digunakan untuk memanggil Gemini API
 	// Connector authorization hanya memberi permission ke Gemini untuk akses Outlook data
-	fmt.Printf("[DEBUG] Using Workforce Identity token for Gemini API call\n")
 	if sess.ConnectorAuthorized {
 		fmt.Printf("[DEBUG] Connector authorized - Gemini can access Outlook data\n")
 	} else {
 		fmt.Printf("[DEBUG] Connector NOT authorized - Gemini cannot access Outlook data\n")
 	}
 
-	raw, err := h.geminiClient.Ask(sess.GoogleAccessToken, body.Message)
-	if err != nil {
-		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+	// Call Gemini API (with or without files)
+	var raw json.RawMessage
+	var err error
+
+	if len(body.GCSURIs) > 0 {
+		// Query with GCS file context (files already uploaded via /api/files/upload)
+		fmt.Printf("[DEBUG] Querying Gemini with GCS file context\n")
+		raw, err = h.geminiClient.AskWithGCSFiles(sess.GoogleAccessToken, body.GCSURIs, body.Message)
+		if err != nil {
+			fmt.Printf("[DEBUG] ❌ Failed to query with GCS files: %v\n", err)
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Failed to query with files: " + err.Error()})
+		}
+	} else {
+		// Send text only (backward compatible - no changes to existing flow)
+		fmt.Printf("[DEBUG] Calling Gemini API with text only (no files)\n")
+		raw, err = h.geminiClient.Ask(sess.GoogleAccessToken, body.Message)
+		if err != nil {
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+		}
 	}
 
 	// Kirim balik apa adanya (raw JSON dari Gemini Enterprise) supaya
@@ -285,7 +443,7 @@ func (h *Handler) Logout(c *fiber.Ctx) error {
 		Name:     sessionCookieName,
 		Value:    "",
 		Expires:  time.Unix(0, 0), // Set to past time to delete
-		MaxAge:   -1,               // Negative MaxAge deletes cookie
+		MaxAge:   -1,              // Negative MaxAge deletes cookie
 		HTTPOnly: true,
 		Secure:   h.cfg.CookieSecure,
 		SameSite: "Lax",
@@ -414,9 +572,9 @@ func (h *Handler) DebugTokenInfo(c *fiber.Ctx) error {
 			"tokenExpiry": sess.GoogleTokenExpiry,
 			"createdAt":   sess.CreatedAt,
 		},
-		"tokenInfo": tokenInfo,
+		"tokenInfo":    tokenInfo,
 		"tokenPreview": sess.GoogleAccessToken[:50] + "...",
-		"note": "Token info may be empty for Workforce Identity Federation tokens",
+		"note":         "Token info may be empty for Workforce Identity Federation tokens",
 	})
 }
 
@@ -601,9 +759,54 @@ func (h *Handler) ConnectorLogin(c *fiber.Ctx) error {
 		Path:     "/",
 	})
 
-	authURL := h.connectorClient.AuthCodeURL(state)
-	fmt.Printf("[DEBUG] Redirecting to Microsoft OAuth for connector:\n  %s\n", authURL)
-	fmt.Printf("[DEBUG] Connector State: %s\n", state)
+	// 🧪 EXPERIMENT 4: Use EXACT state format from Google WebApp (network capture)
+	// Discovery: State format completely different from our assumptions!
+	// Format based on actual network capture from working WebApp flow.
+	googleCallbackURL := "https://vertexaisearch.cloud.google.com/oauth-redirect"
+
+	// Build connector path in Google's format
+	connectorPath := fmt.Sprintf("collections/%s/dataConnector", h.cfg.OutlookConnectorID)
+
+	// Build state with EXACT structure from Google WebApp network capture
+	stateData := map[string]interface{}{
+		"origin":    "https://vertexaisearch.cloud.google",
+		"requestId": "ucs-federated-sources-0", // Request ID from WebApp, kalau dari custom app apa ? gmana cara dapetnya ?
+		"extraData": map[string]interface{}{
+			"dataConnectors": []string{connectorPath},
+			"sourceType":     h.cfg.OutlookConnectorID,
+			"Rr":             "outlook",
+			"extraData": map[string]interface{}{
+				"value":           h.cfg.OutlookConnectorID,
+				"kind":            "outlook",
+				"rq":              "outlook",
+				"dataConnector":   connectorPath,
+				"actionConnector": connectorPath,
+				"gq":              true,
+				"authState":       "AUTHORIZED",
+				"label":           "",
+				"ue":              []interface{}{},
+			},
+		},
+	}
+
+	stateJSON, err := json.Marshal(stateData)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("Failed to build state")
+	}
+
+	// Encode as base64 URL-safe
+	stateEncoded := base64.URLEncoding.EncodeToString(stateJSON)
+
+	authURL := h.connectorClient.AuthCodeURLWithCustomRedirect(stateEncoded, googleCallbackURL)
+	fmt.Printf("[DEBUG] 🧪 EXPERIMENT 4: Using EXACT state format from WebApp network capture!\n")
+	fmt.Printf("  User: %s\n", sess.Email)
+	fmt.Printf("  Connector Path: %s\n", connectorPath)
+	fmt.Printf("  State JSON: %s\n", string(stateJSON))
+	fmt.Printf("  State Base64: %s\n", stateEncoded)
+	fmt.Printf("  Authorization URL: %s\n", authURL)
+	fmt.Printf("  Callback will go to: %s\n", googleCallbackURL)
+	fmt.Printf("  ⚠️  Note: After authorization, you won't be redirected back to this app.\n")
+	fmt.Printf("  ⚠️  Close the browser tab and return to test if connector access works.\n")
 
 	return c.Redirect(authURL, fiber.StatusFound)
 }
@@ -768,9 +971,8 @@ func (h *Handler) ConnectorStatus(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"authorized": sess.ConnectorAuthorized,
-		"expiry":     sess.ConnectorTokenExpiry,
+		"authorized":      sess.ConnectorAuthorized,
+		"expiry":          sess.ConnectorTokenExpiry,
 		"hasRefreshToken": sess.ConnectorRefreshToken != "",
 	})
 }
-

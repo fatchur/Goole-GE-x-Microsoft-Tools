@@ -200,22 +200,97 @@
     font-style: italic;
   }
 
+  /* ---------- File attachment styles ---------- */
+  .file-preview {
+    background: #f8f9fa;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+  }
+  .file-preview-icon {
+    font-size: 24px;
+    flex-shrink: 0;
+  }
+  .file-preview-info {
+    flex: 1;
+    min-width: 0;
+  }
+  .file-preview-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .file-preview-size {
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .file-preview-remove {
+    background: #dc3545;
+    color: white;
+    border: none;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .file-preview-remove:hover {
+    background: #c82333;
+  }
+  .file-preview-image {
+    max-width: 200px;
+    max-height: 150px;
+    border-radius: 6px;
+    margin-top: 8px;
+    object-fit: contain;
+  }
+
   .composer {
     display: flex;
+    flex-direction: column;
     gap: 8px;
     border: 1px solid var(--border);
     background: white;
     border-radius: 10px;
     padding: 8px;
   }
-  .composer input {
+  .composer-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .composer input[type="text"] {
     flex: 1;
     border: none;
     outline: none;
     font-size: 14px;
     padding: 8px 6px;
   }
-  .composer button {
+  .composer input[type="file"] {
+    display: none;
+  }
+  .composer .attach-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--navy);
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    transition: all 0.2s;
+  }
+  .composer .attach-btn:hover {
+    background: #f0f1f5;
+    border-color: var(--navy);
+  }
+  .composer button.send-btn {
     background: var(--navy);
     color: white;
     border: none;
@@ -228,6 +303,29 @@
   .composer button:disabled {
     background: #b7bce0;
     cursor: not-allowed;
+  }
+
+  /* Bubble with attachment */
+  .bubble-attachment {
+    margin-top: 8px;
+    padding: 8px;
+    background: rgba(0,0,0,0.05);
+    border-radius: 6px;
+  }
+  .bubble-attachment-image {
+    max-width: 100%;
+    max-height: 300px;
+    border-radius: 4px;
+    display: block;
+  }
+  .bubble-attachment-file {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+  }
+  .bubble-attachment-icon {
+    font-size: 20px;
   }
 
   .checking {
@@ -256,6 +354,7 @@
     display: flex;
     gap: 8px;
     margin-bottom: 12px;
+    flex-wrap: wrap;
   }
   .connector-actions button {
     background: var(--navy);
@@ -388,39 +487,135 @@ const BACKEND_URL = "http://localhost:8080";
 
 createApp({
   setup() {
-    const checkingSession = ref(true); // true selama proses cek /api/me pertama kali
-    const user = ref(null);            // { name, email } kalau sudah login
+    const checkingSession = ref(true);
+    const user = ref(null);
     const loginError = ref("");
 
-    const messages = ref([]);          // { role: 'user' | 'assistant' | 'error', text }
+    const messages = ref([]);
     const chatInput = ref("");
     const sending = ref(false);
     const messagesEl = ref(null);
 
+    // File attachment state
+    const attachedFile = ref(null);
+    const filePreviewUrl = ref(null);
+    const uploadedGCSUri = ref(null); // Store GCS URI after upload
+    const uploadingFile = ref(false); // Track upload progress
+
     // Connector management
-    const connectors = ref(null);      // Data connector list
-    const connectorDetail = ref(null); // Detail connector yang dipilih
-    const engineConfig = ref(null);    // Engine configuration
+    const connectors = ref(null);
+    const connectorDetail = ref(null);
+    const engineConfig = ref(null);
     const loadingConnectors = ref(false);
-    const needsConnectorAuth = ref(false); // Flag if connector authorization needed
-    const authKeywords = ref([]);      // Keywords detected for auth needed
+    const needsConnectorAuth = ref(false);
+    const authKeywords = ref([]);
 
     // -------------------------------------------------------------
-    // 1) Cek status login saat halaman dibuka (panggil /api/me).
-    //    Ini yang menentukan apakah user melihat halaman login
-    //    atau halaman chat.
+    // File attachment functions
+    // -------------------------------------------------------------
+    function triggerFileInput() {
+      document.getElementById('file-input').click();
+    }
+
+    async function handleFileSelect(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      // Check file size (max 10MB)
+      const maxSize = 10 * 1024 * 1024; // 10MB
+      if (file.size > maxSize) {
+        alert('File terlalu besar! Maksimal 10MB.');
+        event.target.value = '';
+        return;
+      }
+
+      attachedFile.value = file;
+
+      // Generate preview for images
+      if (file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          filePreviewUrl.value = e.target.result;
+        };
+        reader.readAsDataURL(file);
+      } else {
+        filePreviewUrl.value = null;
+      }
+
+      console.log('[DEBUG] File selected:', file.name, formatFileSize(file.size));
+      console.log('[DEBUG] Uploading file to server...');
+
+      // Upload file immediately to get file ID
+      uploadingFile.value = true;
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const res = await fetch(`${BACKEND_URL}/api/files/upload`, {
+          method: 'POST',
+          credentials: 'include',
+          body: formData
+        });
+
+        if (!res.ok) {
+          const error = await res.json();
+          throw new Error(error.error || 'Failed to upload file');
+        }
+
+        const data = await res.json();
+        uploadedGCSUri.value = data.gcsUri;
+
+        console.log('[DEBUG] ✅ File uploaded successfully');
+        console.log('[DEBUG] - GCS URI:', data.gcsUri);
+      } catch (error) {
+        console.error('[DEBUG] ❌ File upload failed:', error);
+        alert('Gagal upload file: ' + error.message);
+        removeAttachment();
+      } finally {
+        uploadingFile.value = false;
+      }
+
+      // Clear the input so same file can be selected again
+      event.target.value = '';
+    }
+
+    function removeAttachment() {
+      attachedFile.value = null;
+      filePreviewUrl.value = null;
+      uploadedGCSUri.value = null;
+      console.log('[DEBUG] Attachment removed');
+    }
+
+    function formatFileSize(bytes) {
+      if (bytes === 0) return '0 Bytes';
+      const k = 1024;
+      const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+    }
+
+    function getFileIcon(file) {
+      if (!file) return '📄';
+      if (file.type.startsWith('image/')) return '🖼️';
+      if (file.type.startsWith('video/')) return '🎥';
+      if (file.type.startsWith('audio/')) return '🎵';
+      if (file.type.includes('pdf')) return '📕';
+      if (file.type.includes('word') || file.type.includes('document')) return '📘';
+      if (file.type.includes('excel') || file.type.includes('spreadsheet')) return '📊';
+      if (file.type.includes('powerpoint') || file.type.includes('presentation')) return '📙';
+      if (file.type.includes('zip') || file.type.includes('rar') || file.type.includes('7z')) return '📦';
+      return '📄';
+    }
+
+    // -------------------------------------------------------------
+    // 1) Cek status login
     // -------------------------------------------------------------
     async function checkSession() {
       try {
         console.log("[DEBUG] Checking session...");
-        console.log("[DEBUG] Current cookies:", document.cookie);
-
         const res = await fetch(`${BACKEND_URL}/api/me`, {
-          credentials: "include", // wajib: supaya cookie session ikut terkirim
+          credentials: "include",
         });
-
-        console.log("[DEBUG] /api/me response status:", res.status);
-        console.log("[DEBUG] Response headers:", [...res.headers.entries()]);
 
         if (res.ok) {
           const data = await res.json();
@@ -428,162 +623,91 @@ createApp({
           console.log("[DEBUG] ✅ User logged in:", user.value);
         } else {
           user.value = null;
-          console.log("[DEBUG] ❌ User not logged in (status:", res.status, ")");
         }
       } catch (e) {
-        // Backend belum jalan / network error — anggap saja belum login.
         console.error("[DEBUG] ⚠️ Error checking session:", e);
         user.value = null;
       } finally {
         checkingSession.value = false;
-        console.log("[DEBUG] Session check complete. User state:", user.value ? "logged in" : "not logged in");
       }
     }
 
     // -------------------------------------------------------------
-    // 2) Login: PENTING — ini navigasi halaman biasa (bukan fetch),
-    //    karena /auth/login akan me-redirect browser ke Microsoft.
-    //    Kalau dipanggil pakai fetch(), akan gagal kena CORS.
+    // 2) Login
     // -------------------------------------------------------------
     function login() {
       console.log("[DEBUG] 🔐 Initiating login flow...");
-      console.log("[DEBUG] Redirecting to:", `${BACKEND_URL}/auth/login`);
-      console.log("[DEBUG] Current cookies before login:", document.cookie);
       window.location.href = `${BACKEND_URL}/auth/login`;
     }
 
     // -------------------------------------------------------------
-    // 3) Logout: ini boleh pakai fetch biasa, karena tidak melibatkan
-    //    redirect lintas domain — cuma menghapus session di backend.
+    // 3) Logout
     // -------------------------------------------------------------
     async function logout() {
       try {
-        console.log("[DEBUG] Logging out...");
-        const res = await fetch(`${BACKEND_URL}/auth/logout`, {
+        await fetch(`${BACKEND_URL}/auth/logout`, {
           method: "POST",
           credentials: "include",
         });
-        console.log("[DEBUG] Logout response:", res.status);
       } catch (e) {
         console.error("[DEBUG] Logout error:", e);
       } finally {
-        // Clear all frontend state
         user.value = null;
         messages.value = [];
-        connectors.value = null;
-        connectorDetail.value = null;
-        engineConfig.value = null;
-        needsConnectorAuth.value = false;
-        authKeywords.value = [];
-
-        // IMPORTANT: Reload page to clear all state and cookies
-        console.log("[DEBUG] Reloading page after logout...");
+        attachedFile.value = null;
+        filePreviewUrl.value = null;
         window.location.reload();
       }
     }
 
     // -------------------------------------------------------------
-    // DEBUG: Clear all sessions (development only)
-    // -------------------------------------------------------------
-    async function clearAllSessions() {
-      try {
-        console.log("[DEBUG] 🧹 Clearing all sessions...");
-        const res = await fetch(`${BACKEND_URL}/auth/debug/clear-all-sessions`, {
-          credentials: "include",
-        });
-        const data = await res.json();
-        console.log("[DEBUG] Clear sessions response:", data);
-
-        user.value = null;
-        messages.value = [];
-        connectors.value = null;
-        connectorDetail.value = null;
-        engineConfig.value = null;
-        needsConnectorAuth.value = false;
-
-        alert("✅ All sessions cleared!\n\n" + data.message + "\n\nPage will reload now.");
-        window.location.reload();
-      } catch (e) {
-        console.error("[DEBUG] Error clearing sessions:", e);
-        alert("❌ Error clearing sessions: " + e.message);
-      }
-    }
-
-    // -------------------------------------------------------------
-    // DEBUG: List all active sessions
-    // -------------------------------------------------------------
-    async function listSessions() {
-      try {
-        console.log("[DEBUG] 📋 Fetching session list...");
-        const res = await fetch(`${BACKEND_URL}/auth/debug/sessions`, {
-          credentials: "include",
-        });
-        const data = await res.json();
-        console.log("[DEBUG] Sessions:", data);
-        alert(`Active Sessions: ${data.count}\n\n${data.sessionIDs.join('\n')}`);
-      } catch (e) {
-        console.error("[DEBUG] Error listing sessions:", e);
-        alert("❌ Error listing sessions: " + e.message);
-      }
-    }
-
-    // -------------------------------------------------------------
-    // DEBUG: Get token info
-    // -------------------------------------------------------------
-    async function getTokenInfo() {
-      try {
-        console.log("[DEBUG] 🔍 Fetching token info...");
-        const res = await fetch(`${BACKEND_URL}/api/debug/token-info`, {
-          credentials: "include",
-        });
-        const data = await res.json();
-        console.log("[DEBUG] Token Info:", data);
-
-        const info = [
-          "📋 TOKEN INFORMATION",
-          "",
-          "Session:",
-          `  - Email: ${data.session.email}`,
-          `  - Name: ${data.session.name}`,
-          `  - Session ID: ${data.session.sessionID}`,
-          `  - Created: ${new Date(data.session.createdAt).toLocaleString()}`,
-          `  - Expires: ${new Date(data.session.tokenExpiry).toLocaleString()}`,
-          "",
-          "Token Preview:",
-          `  ${data.tokenPreview}`,
-          "",
-          "Token Info:",
-          JSON.stringify(data.tokenInfo, null, 2),
-          "",
-          data.note,
-        ].join('\n');
-
-        alert(info);
-      } catch (e) {
-        console.error("[DEBUG] Error getting token info:", e);
-        alert("❌ Error getting token info: " + e.message);
-      }
-    }
-
-    // -------------------------------------------------------------
-    // 4) Kirim pesan chat ke backend, backend yang meneruskan ke
-    //    Gemini Enterprise memakai token yang tersimpan di session.
+    // 4) Send message (with optional file attachment)
     // -------------------------------------------------------------
     async function sendMessage() {
       const text = chatInput.value.trim();
+      const file = attachedFile.value;
+      const gcsUri = uploadedGCSUri.value;
+
       if (!text || sending.value) return;
 
-      messages.value.push({ role: "user", text });
+      // Add user message to UI
+      const userMessage = {
+        role: "user",
+        text: text,
+        file: file ? {
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          previewUrl: filePreviewUrl.value
+        } : null
+      };
+
+      messages.value.push(userMessage);
       chatInput.value = "";
+      removeAttachment(); // Clear attachment state
+
       sending.value = true;
       await scrollToBottom();
 
       try {
+        // Build request body (always JSON now)
+        const requestBody = {
+          message: text
+        };
+
+        // Add GCS URIs if file was uploaded
+        if (gcsUri) {
+          requestBody.gcsUris = [gcsUri];
+          console.log('[DEBUG] Sending message with GCS URI:', gcsUri);
+        } else {
+          console.log('[DEBUG] Sending text-only message');
+        }
+
         const res = await fetch(`${BACKEND_URL}/api/chat`, {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text }),
+          body: JSON.stringify(requestBody),
         });
 
         if (res.status === 401) {
@@ -609,21 +733,14 @@ createApp({
         if (data.connectorAuthCheck && data.connectorAuthCheck.needsAuthorization) {
           needsConnectorAuth.value = true;
           authKeywords.value = data.connectorAuthCheck.detectedKeywords || [];
-          console.log("[DEBUG] Connector authorization needed. Keywords:", authKeywords.value);
         }
 
         // Extract actual response data
         const responseData = data.raw || data;
 
-        // Catatan: bentuk respons persis dari Gemini Enterprise (streamAssist)
-        // bisa cukup kompleks (nested JSON). Untuk demo sederhana ini kita
-        // coba ambil teks jawabannya kalau ada, kalau tidak ketemu pola yang
-        // diharapkan, tampilkan JSON mentahnya supaya tetap terlihat hasilnya.
-
-        // For streaming response (array of chunks)
+        // Handle streaming response
         let answerText = "";
         if (Array.isArray(responseData)) {
-          // Collect all text from streaming chunks
           for (const chunk of responseData) {
             const chunkText = chunk?.answer?.replies?.[0]?.groundedContent?.content?.text;
             if (chunkText) {
@@ -644,7 +761,7 @@ createApp({
       } catch (e) {
         messages.value.push({
           role: "error",
-          text: "Gagal terhubung ke backend. Pastikan backend sedang berjalan.",
+          text: "Gagal terhubung ke backend. Pastikan backend sedang berjalan. Error: " + e.message,
         });
       } finally {
         sending.value = false;
@@ -660,127 +777,78 @@ createApp({
     }
 
     // -------------------------------------------------------------
-    // 5) Get connector list from backend
+    // Connector management functions (unchanged)
     // -------------------------------------------------------------
     async function getConnectorList() {
       loadingConnectors.value = true;
-      connectorDetail.value = null; // Reset detail
+      connectorDetail.value = null;
       try {
-        console.log("[DEBUG] Fetching connector list...");
         const res = await fetch(`${BACKEND_URL}/api/datastores`, {
           credentials: "include",
         });
-
-        if (res.status === 401) {
-          alert("Sesi kamu sudah habis. Silakan login ulang.");
-          user.value = null;
-          return;
+        if (res.ok) {
+          connectors.value = await res.json();
         }
-
-        const data = await res.json();
-        console.log("[DEBUG] Connector list response:", data);
-        connectors.value = data;
       } catch (e) {
         console.error("[DEBUG] Error fetching connector list:", e);
-        alert("Gagal mengambil connector list. Pastikan backend sedang berjalan.");
       } finally {
         loadingConnectors.value = false;
       }
     }
 
-    // -------------------------------------------------------------
-    // 6) Get specific connector detail
-    // -------------------------------------------------------------
     async function getConnectorDetail(dataStoreId) {
       loadingConnectors.value = true;
       try {
-        console.log("[DEBUG] Fetching connector detail for:", dataStoreId);
         const res = await fetch(`${BACKEND_URL}/api/datastores/${dataStoreId}`, {
           credentials: "include",
         });
-
-        if (res.status === 401) {
-          alert("Sesi kamu sudah habis. Silakan login ulang.");
-          user.value = null;
-          return;
+        if (res.ok) {
+          connectorDetail.value = await res.json();
         }
-
-        const data = await res.json();
-        console.log("[DEBUG] Connector detail response:", data);
-        connectorDetail.value = data;
       } catch (e) {
         console.error("[DEBUG] Error fetching connector detail:", e);
-        alert("Gagal mengambil connector detail.");
       } finally {
         loadingConnectors.value = false;
       }
     }
 
-    // -------------------------------------------------------------
-    // 7) Get engine configuration
-    // -------------------------------------------------------------
     async function getEngineConfig() {
       loadingConnectors.value = true;
       try {
-        console.log("[DEBUG] Fetching engine config...");
         const res = await fetch(`${BACKEND_URL}/api/engine`, {
           credentials: "include",
         });
-
-        if (res.status === 401) {
-          alert("Sesi kamu sudah habis. Silakan login ulang.");
-          user.value = null;
-          return;
+        if (res.ok) {
+          engineConfig.value = await res.json();
         }
-
-        const data = await res.json();
-        console.log("[DEBUG] Engine config response:", data);
-        engineConfig.value = data;
       } catch (e) {
         console.error("[DEBUG] Error fetching engine config:", e);
-        alert("Gagal mengambil engine config.");
       } finally {
         loadingConnectors.value = false;
       }
     }
 
-    // -------------------------------------------------------------
-    // 8) Check connector authorization status
-    // -------------------------------------------------------------
     async function checkConnectorStatus() {
       try {
-        console.log("[DEBUG] Checking connector authorization status...");
         const res = await fetch(`${BACKEND_URL}/api/connector/status`, {
           credentials: "include",
         });
-
         if (res.ok) {
           const data = await res.json();
-          console.log("[DEBUG] Connector status:", data);
           return data.authorized;
-        } else {
-          console.error("[DEBUG] Failed to check connector status:", res.status);
-          return false;
         }
+        return false;
       } catch (e) {
-        console.error("[DEBUG] Error checking connector status:", e);
         return false;
       }
     }
 
-    // -------------------------------------------------------------
-    // 9) Open popup for connector authorization (Microsoft OAuth)
-    // -------------------------------------------------------------
     function authorizeConnector() {
-      console.log("[DEBUG] 🔌 Opening connector authorization popup...");
-
-      // Calculate center position for popup
       const width = 500;
       const height = 600;
       const left = (screen.width - width) / 2;
       const top = (screen.height - height) / 2;
 
-      // Open popup window
       const popup = window.open(
         `${BACKEND_URL}/auth/connector/authorize`,
         'ConnectorAuthorization',
@@ -792,25 +860,61 @@ createApp({
         return;
       }
 
-      // Poll to detect when popup closes
       const checkPopup = setInterval(async () => {
         if (popup.closed) {
           clearInterval(checkPopup);
-          console.log("[DEBUG] Popup closed, checking connector status...");
-
-          // Check if connector is now authorized
           const authorized = await checkConnectorStatus();
-
           if (authorized) {
-            console.log("[DEBUG] ✅ Connector authorized!");
-            alert('✅ Outlook connector authorized! You can now query your emails and calendar.');
+            alert('✅ Outlook connector authorized!');
             needsConnectorAuth.value = false;
           } else {
-            console.log("[DEBUG] ⚠️  Connector still not authorized");
-            alert('⚠️ Connector authorization may have failed or was cancelled. Please try again.');
+            alert('⚠️ Connector authorization may have failed.');
           }
         }
-      }, 500); // Check every 500ms
+      }, 500);
+    }
+
+    async function clearAllSessions() {
+      try {
+        const res = await fetch(`${BACKEND_URL}/auth/debug/clear-all-sessions`, {
+          credentials: "include",
+        });
+        const data = await res.json();
+        alert("✅ All sessions cleared!\n\n" + data.message);
+        window.location.reload();
+      } catch (e) {
+        alert("❌ Error clearing sessions: " + e.message);
+      }
+    }
+
+    async function listSessions() {
+      try {
+        const res = await fetch(`${BACKEND_URL}/auth/debug/sessions`, {
+          credentials: "include",
+        });
+        const data = await res.json();
+        alert(`Active Sessions: ${data.count}\n\n${data.sessionIDs.join('\n')}`);
+      } catch (e) {
+        alert("❌ Error listing sessions: " + e.message);
+      }
+    }
+
+    async function getTokenInfo() {
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/debug/token-info`, {
+          credentials: "include",
+        });
+        const data = await res.json();
+        const info = [
+          "📋 TOKEN INFORMATION",
+          "",
+          `Session: ${data.session.email}`,
+          `Token: ${data.tokenPreview}`,
+        ].join('\n');
+        alert(info);
+      } catch (e) {
+        alert("❌ Error getting token info: " + e.message);
+      }
     }
 
     function initials(name) {
@@ -833,6 +937,8 @@ createApp({
       chatInput,
       sending,
       messagesEl,
+      attachedFile,
+      filePreviewUrl,
       connectors,
       connectorDetail,
       engineConfig,
@@ -842,6 +948,11 @@ createApp({
       login,
       logout,
       sendMessage,
+      triggerFileInput,
+      handleFileSelect,
+      removeAttachment,
+      formatFileSize,
+      getFileIcon,
       getConnectorList,
       getConnectorDetail,
       getEngineConfig,
@@ -891,9 +1002,6 @@ createApp({
             <div class="auth-warning-title">Connector Authorization Required</div>
             <div class="auth-warning-text">
               Outlook connector needs to be authorized before you can access your emails, calendar, and contacts.
-              <div v-if="authKeywords.length > 0" style="margin-top: 4px; font-size: 11px; opacity: 0.8;">
-                Detected keywords: {{ authKeywords.join(', ') }}
-              </div>
             </div>
             <button class="auth-warning-btn" @click="authorizeConnector">
               🔐 Authorize Outlook Connector
@@ -952,13 +1060,11 @@ createApp({
             </div>
           </div>
 
-          <!-- Connector Detail Display -->
           <div v-if="connectorDetail" class="connector-list" style="margin-top: 12px;">
             <strong>📋 Connector Detail:</strong><br/><br/>
             {{ JSON.stringify(connectorDetail, null, 2) }}
           </div>
 
-          <!-- Engine Config Display -->
           <div v-if="engineConfig" class="connector-list" style="margin-top: 12px;">
             <strong>⚙️ Engine Configuration:</strong><br/><br/>
             {{ JSON.stringify(engineConfig, null, 2) }}
@@ -972,7 +1078,7 @@ createApp({
         <div class="messages" ref="messagesEl">
           <div v-if="messages.length === 0" class="empty-state">
             Halo {{ user.name || user.email }} 👋<br />
-            Coba tanya sesuatu, misalnya "ringkas email terbaru saya".
+            Coba tanya sesuatu, atau attach gambar untuk dianalisis.
           </div>
 
           <div
@@ -982,22 +1088,61 @@ createApp({
             :class="m.role"
           >
             {{ m.text }}
+
+            <!-- Show attached file in user message -->
+            <div v-if="m.file" class="bubble-attachment">
+              <img v-if="m.file.previewUrl" :src="m.file.previewUrl" class="bubble-attachment-image" />
+              <div v-else class="bubble-attachment-file">
+                <span class="bubble-attachment-icon">{{ getFileIcon(m.file) }}</span>
+                <span>{{ m.file.name }} ({{ formatFileSize(m.file.size) }})</span>
+              </div>
+            </div>
           </div>
 
           <div v-if="sending" class="bubble pending">Gemini sedang menjawab…</div>
         </div>
 
+        <!-- Composer with file attachment -->
         <div class="composer">
-          <input
-            v-model="chatInput"
-            type="text"
-            placeholder="Tulis pesan…"
-            @keyup.enter="sendMessage"
-            :disabled="sending"
-          />
-          <button @click="sendMessage" :disabled="sending || !chatInput.trim()">
-            Kirim
-          </button>
+          <!-- File preview (if attached) -->
+          <div v-if="attachedFile" class="file-preview">
+            <span class="file-preview-icon">{{ uploadingFile ? '⏳' : '✅' }}</span>
+            <div class="file-preview-info">
+              <div class="file-preview-name">{{ attachedFile.name }}</div>
+              <div class="file-preview-size">
+                {{ formatFileSize(attachedFile.size) }}
+                <span v-if="uploadingFile" style="color: #888; margin-left: 8px;">Uploading...</span>
+                <span v-else-if="uploadedGCSUri" style="color: #4caf50; margin-left: 8px;">Ready</span>
+              </div>
+            </div>
+            <button class="file-preview-remove" @click="removeAttachment" :disabled="uploadingFile">✕</button>
+          </div>
+
+          <!-- Image preview (if image attached) -->
+          <img v-if="filePreviewUrl" :src="filePreviewUrl" class="file-preview-image" />
+
+          <!-- Input row -->
+          <div class="composer-input-row">
+            <input
+              type="file"
+              id="file-input"
+              accept="image/*,.pdf,.doc,.docx,.txt"
+              @change="handleFileSelect"
+            />
+            <button class="attach-btn" @click="triggerFileInput" :disabled="sending || uploadingFile" title="Attach file">
+              📎
+            </button>
+            <input
+              v-model="chatInput"
+              type="text"
+              placeholder="Tulis pesan atau attach file…"
+              @keyup.enter="sendMessage"
+              :disabled="sending || uploadingFile"
+            />
+            <button class="send-btn" @click="sendMessage" :disabled="sending || uploadingFile || !chatInput.trim()">
+              Kirim
+            </button>
+          </div>
         </div>
       </div>
     </div>

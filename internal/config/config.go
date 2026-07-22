@@ -26,12 +26,15 @@ type Config struct {
 	WorkforceProviderID string // contoh: entra-oidc-provider
 
 	// --- Gemini Enterprise ---
-	GCPProjectID   string // project number, mis. "945912627556"
-	GeminiAppID    string // App ID Gemini Enterprise, mis. "gemini-enterprise-1783673478762"
-	GeminiLocation string // "global", "us", atau "eu"
+	GCPProjectNumber string // project number (numeric), mis. "945912627556"
+	GeminiAppID      string // App ID Gemini Enterprise, mis. "gemini-enterprise-1783673478762"
+	GeminiLocation   string // "global", "us", atau "eu"
 
 	// --- Outlook Connector ---
 	OutlookConnectorID string // Connector ID dari GCP Console, mis. "outlook-federated-connector_1783678287149"
+
+	// --- Google Cloud Storage (for file uploads) ---
+	GCSBucketName string // Bucket name untuk upload file, mis. "gemini-enterprise-files"
 
 	// --- Frontend ---
 	FrontendURL string // ke mana browser diarahkan setelah login sukses
@@ -57,11 +60,13 @@ func Load() *Config {
 		WorkforcePoolID:     mustGetEnv("GCP_WORKFORCE_POOL_ID"),
 		WorkforceProviderID: mustGetEnv("GCP_WORKFORCE_PROVIDER_ID"),
 
-		GCPProjectID:   mustGetEnv("GCP_PROJECT_ID"),
-		GeminiAppID:    mustGetEnv("GEMINI_APP_ID"),
-		GeminiLocation: getEnv("GEMINI_LOCATION", "global"),
+		GCPProjectNumber: mustGetEnv("GCP_PROJECT_NUMBER"),
+		GeminiAppID:      mustGetEnv("GEMINI_APP_ID"),
+		GeminiLocation:   getEnv("GEMINI_LOCATION", "global"),
 
 		OutlookConnectorID: getEnv("OUTLOOK_CONNECTOR_ID", ""),
+
+		GCSBucketName: mustGetEnv("GCS_BUCKET_NAME"),
 
 		FrontendURL: getEnv("FRONTEND_URL", "http://localhost:5173"),
 
